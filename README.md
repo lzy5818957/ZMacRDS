@@ -2,12 +2,13 @@
 
 用 Windows 自带的远程桌面客户端（`mstsc.exe`）连接一台 Mac，让不同用户同时操作各自的 macOS 图形桌面。这是一个研究项目，32 个并发用户是容量目标。
 
-**当前进度**　已提供开发计划和本机会话诊断工具。目前没有可供 Windows 连接的 RDP 服务端，也没有双用户或 32 用户测试结果。
+**当前进度**　M0 会话身份工具已实现，待双账号虚拟机验收。Windows RDP 连接和 32 人容量测试属于后续阶段。
 
 ## 从这里开始
 
-1. 阅读[开发计划](docs/DEVELOPMENT_PLAN.md)，了解双账号实验和各阶段验收条件。
-2. 在装有 Xcode Command Line Tools 的 Mac 上，从一个已登录测试账号的 Terminal 运行以下命令。
+按[双账号测试操作单](docs/M0_TEST.md)运行第一阶段验收。执行 `make m0-kit` 可生成包含代理和验证器的虚拟机测试包。[开发计划](docs/DEVELOPMENT_PLAN.md)列出了后续桌面隔离和 Windows 连接的验收条件。
+
+若只需查看当前 Terminal 的会话身份，可在装有 Xcode Command Line Tools 的 Mac 上运行以下命令。
 
 ```sh
 make probe

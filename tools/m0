@@ -1,0 +1,65 @@
+#!/bin/sh
+set -eu
+export LC_ALL=C
+umask 077
+
+bin_dir=$(CDPATH= cd -P "$(dirname "$0")" && pwd)
+usage() {
+    echo 'Usage: m0 start RUN | m0 stop RUN | m0 verify A.jsonl B.jsonl' >&2
+    exit 2
+}
+case "${1:-}" in
+    verify) shift; exec "$bin_dir/m0-verify" "$@" ;;
+    start|stop) [ "$#" -eq 2 ] || usage ;;
+    *) usage ;;
+esac
+run=$2
+case "$run" in ''|*[!a-zA-Z0-9_-]*) usage ;; esac
+[ "${#run}" -le 48 ] || usage
+uid=$(id -u)
+if [ "$uid" -eq 0 ]; then
+    echo 'Run this from the desktop of the test account, without sudo.' >&2
+    exit 1
+fi
+
+domain="gui/$uid"
+label="org.zmacrds.m0.$run"
+if [ "$1" = stop ]; then
+    exec /bin/launchctl bootout "$domain/$label"
+fi
+
+parent="$HOME/Library/Application Support/ZMacRDS/M0"
+dir="$parent/$run"
+mkdir -p "$parent"
+if ! mkdir -m 700 "$dir"; then
+    echo 'Start each experiment with a new run ID shared by both accounts.' >&2
+    exit 1
+fi
+cp "$bin_dir/session-probe" "$dir/session-probe"
+: > "$dir/samples.jsonl"
+: > "$dir/stderr.log"
+plist="$dir/agent.plist"
+plutil -create xml1 "$plist"
+plutil -insert Label -string "$label" "$plist"
+plutil -insert LimitLoadToSessionType -string Aqua "$plist"
+plutil -insert RunAtLoad -bool YES "$plist"
+plutil -insert ProgramArguments -array "$plist"
+plutil -insert ProgramArguments.0 -string "$dir/session-probe" "$plist"
+plutil -insert ProgramArguments.1 -string '--m0-agent' "$plist"
+plutil -insert ProgramArguments.2 -string "$run" "$plist"
+plutil -insert StandardOutPath -string "$dir/samples.jsonl" "$plist"
+plutil -insert StandardErrorPath -string "$dir/stderr.log" "$plist"
+/bin/launchctl bootstrap "$domain" "$plist"
+
+attempt=0
+while [ "$attempt" -lt 10 ]; do
+    if [ -s "$dir/samples.jsonl" ]; then
+        echo "$dir/samples.jsonl"
+        exit 0
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+done
+/bin/launchctl bootout "$domain/$label" || true
+echo "No sample received. See $dir/stderr.log and retry with a new run ID." >&2
+exit 1
