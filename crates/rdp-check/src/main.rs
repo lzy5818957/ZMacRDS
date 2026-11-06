@@ -38,6 +38,8 @@ use tokio_rustls::{TlsConnector, rustls};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    #[serde(default = "default_host")]
+    host: String,
     #[serde(default = "default_port")]
     port: u16,
     #[serde(default)]
@@ -64,6 +66,7 @@ struct Config {
 fn default_port() -> u16 {
     3390
 }
+fn default_host() -> String { "127.0.0.1".into() }
 impl Drop for Config {
     fn drop(&mut self) {
         use zeroize::Zeroize;
@@ -346,7 +349,7 @@ async fn run(config: Config) -> Result<()> {
     let tls = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    let tcp = TcpStream::connect(("127.0.0.1", config.port)).await?;
+    let tcp = TcpStream::connect((config.host.as_str(), config.port)).await?;
     let mut connector = ClientConnector::new(connector_config(&config), tcp.local_addr()?);
     let audio_stats=Arc::new(Mutex::new(audio::Stats::default()));
     if let Some(tones)=config.audio_probe {connector.attach_static_channel(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(audio::Backend::new(audio_stats.clone(),tones))));}

@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 
-VERSION = '0.3.0'
+VERSION = '0.3.1'
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BASE = pathlib.Path('Library/Application Support/ZMacRDS')
 
@@ -80,6 +80,7 @@ def main():
                  'zmacrds-uninstall.py':ROOT/'tools/uninstall-service.py'}
         for name,source in sources.items():
             shutil.copyfile(source, libexec/name);(libexec/name).chmod(0o755 if not name.endswith('.py') else 0o644)
+        run('/usr/bin/codesign','--force','--sign',args.sign_identity,'--timestamp=none','--identifier','org.zmacrds.server',libexec/'zmacrds-server')
         runtime=payload/BASE/'Runtime';shutil.copytree(args.runtime, runtime, symlinks=True)
         for path in runtime.rglob('*'):
             if path.is_symlink():
@@ -112,12 +113,12 @@ def main():
         distribution.write_bytes(ET.tostring(document,encoding='utf-8',xml_declaration=True))
         run('/usr/bin/productbuild','--distribution',distribution,'--resources',resources,'--package-path',stage,output/('ZMacRDS-'+VERSION+'-arm64.pkg'))
     shutil.copyfile(ROOT/'docs/QUICK_START.html',output/'使用说明.html')
-    shutil.copyfile(ROOT/'config/ZMacRDS-fixed.rdp',output/'ZMacRDS-fixed.rdp')
+    (output/'RDP-connection-template.rdp').write_text((ROOT/'config/ZMacRDS-fixed.rdp').read_text().replace('127.0.0.1:3390','YOUR_SERVER_IP'))
     uninstall=output/'卸载 ZMacRDS.command'
     uninstall.write_text('#!/bin/sh\nset -eu\n[ -f /usr/local/libexec/zmacrds-uninstall.py ] || { printf "ZMacRDS 已卸载。\\n"; exit 0; }\nprintf "卸载会停止 ZMacRDS 并移除应用，保留本地账号、文档和连接设置。输入 YES 继续："\nread -r answer\n[ "$answer" = YES ] || exit 0\nsudo "/Library/Application Support/ZMacRDS/Runtime/bin/python3.13" -I -B /usr/local/libexec/zmacrds-uninstall.py\nprintf "\\n已完成。按回车关闭。"\nread -r answer\n')
     uninstall.chmod(0o755)
     reports=output/'测试记录';reports.mkdir()
-    for name in ['RELEASE_0_3_0_2026-11-06.md','BACKGROUND_MANAGER_2026-11-05.md','AUDIO_SERVICE_2026-11-05.md']:
+    for name in ['LAN_LOCAL_ACCOUNTS_2026-11-06.md','RELEASE_0_3_0_2026-11-06.md','BACKGROUND_MANAGER_2026-11-05.md','AUDIO_SERVICE_2026-11-05.md']:
         shutil.copyfile(ROOT/'docs/reports'/name,reports/name)
     hashes=[]
     for path in sorted(output.rglob('*')):

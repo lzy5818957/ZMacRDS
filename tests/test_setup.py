@@ -55,6 +55,89 @@ class SetupTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             setup.validate({'broker_uid': 501, 'desktop_uids': [507]}, None)
 
+    def test_bad_network_settings_fail_before_installation_or_firewall_changes(self):
+        for request in [{'enabled': True, 'port': True}, {'enabled': 1, 'port': 3389},
+                        {'enabled': True, 'port': 3390}, {'enabled': True, 'port': 22},
+                        {'enabled': True, 'port': 65536}, {'enabled': True, 'port': 3389, 'bind': '0.0.0.0'}]:
+            with self.subTest(request=request), patch.object(setup,'allow_firewall') as firewall, \
+                 patch.object(setup,'installer_module') as installer:
+                with self.assertRaises(ValueError): setup.configure_local(request)
+                firewall.assert_not_called();installer.assert_not_called()
+
+    def test_busy_lan_port_does_not_stop_or_change_a_running_server(self):
+        import socket
+        with socket.socket() as occupied:
+            occupied.bind(('0.0.0.0',0));port=occupied.getsockname()[1]
+            with patch.object(setup,'existing',return_value=self.old), \
+                 patch.object(setup,'local_accounts',return_value=list(self.accounts.values())), \
+                 patch.object(setup,'allow_firewall') as firewall, patch.object(setup,'installer_module') as installer:
+                with self.assertRaises(OSError): setup.configure_local({'enabled':True,'port':port})
+                firewall.assert_not_called();installer.assert_not_called()
+
+    def test_failed_listener_restart_restores_private_configuration(self):
+        import subprocess
+        from unittest.mock import Mock
+        writes=[]
+        module=SimpleNamespace(DAEMON=pathlib.Path('/unused-server.plist'),unload=Mock(),
+                               replace=lambda path,data:writes.append(json.loads(data)))
+        failed=subprocess.CalledProcessError(5,['/bin/launchctl','bootstrap'])
+        with patch.object(setup,'existing',return_value=self.old),patch.object(setup,'installer_module',return_value=module), \
+             patch.object(setup.time,'sleep'), \
+             patch.object(setup.subprocess,'run',side_effect=[failed]*5+[subprocess.CompletedProcess([],0)]):
+            with self.assertRaises(subprocess.CalledProcessError):
+                setup.configure_network({'enabled':False,'port':3389})
+        self.assertEqual(writes[-1],self.old)
+        self.assertEqual(writes[0]['users'],self.old['users'])
+
+    def test_saved_port_occupied_by_another_app_is_not_mistaken_for_our_server(self):
+        import socket
+        with socket.socket() as occupied:
+            occupied.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            occupied.bind(('0.0.0.0',0));occupied.listen(1);port=occupied.getsockname()[1]
+            with patch.object(setup,'own_listener',return_value=False) as owned:
+                with self.assertRaises(OSError):setup.preflight_port(port,dict(self.old,lan_port=port))
+                owned.assert_called_once_with(port,self.old['broker_uid'])
+            with patch.object(setup,'own_listener',return_value=True):
+                setup.preflight_port(port,dict(self.old,lan_port=port))
+
+    def test_launchd_removal_race_is_retried_before_configuration_rollback(self):
+        import subprocess
+        failed=subprocess.CalledProcessError(5,['/bin/launchctl','bootstrap'])
+        with patch.object(setup.time,'sleep'), \
+             patch.object(setup.subprocess,'run',side_effect=[failed,subprocess.CompletedProcess([],0)]) as launch:
+            setup.bootstrap_network(SimpleNamespace(DAEMON=pathlib.Path('/unused-server.plist')))
+        self.assertEqual(launch.call_count,2)
+
+    def test_native_bootstrap_never_sends_a_password_to_a_user_owned_listener(self):
+        from unittest.mock import Mock
+        def output(command,**kwargs):
+            if command[0]=='/usr/sbin/sysctl':return '2000'
+            if command[0]=='/bin/ps':return '1\n2\n'
+            return 'p123\ncFakeServer\nu505\n'
+        with patch.object(setup.subprocess,'check_output',side_effect=output), \
+             patch.object(setup.ctypes,'CDLL',return_value=SimpleNamespace(proc_pidpath=Mock())), \
+             patch.object(setup.socket,'create_connection') as connection:
+            with self.assertRaisesRegex(ValueError,'native screen sharing is not available'):
+                setup.open_desktop({'uid':505,'username':'user505','password':'private-fixture'})
+            connection.assert_not_called()
+
+    def test_session_admission_preserves_process_headroom_before_native_login(self):
+        with patch.object(setup.subprocess,'check_output',side_effect=['2000','1\n'*1800]), \
+             patch.object(setup.socket,'create_connection') as connection:
+            result=setup.open_desktop({'uid':505,'username':'user505','password':'private-fixture'})
+            self.assertFalse(result['ok']);self.assertEqual(result['error'],'desktop_capacity')
+            connection.assert_not_called()
+
+    def test_system_auth_connection_info_never_exposes_a_legacy_secret(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cert=pathlib.Path(directory)/'certificate.pem';cert.write_text('-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n')
+            cfg=dict(self.old,certificate=str(cert),local_auth=True,lan_port=3389)
+            with patch.object(setup,'existing',return_value=cfg), patch.object(setup,'local_addresses',return_value=['192.168.1.50']):
+                reply=setup.connection_info(505)
+            self.assertEqual(reply['endpoint'],'192.168.1.50:3389')
+            self.assertEqual(reply['password'],'');self.assertTrue(reply['local_auth'])
+            self.assertNotIn('preserve-existing-secret',json.dumps(reply))
+
     def test_bad_existing_configuration_is_never_treated_as_first_install(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(setup, 'BASE', pathlib.Path(directory)):
             path = pathlib.Path(directory)/'server.json'

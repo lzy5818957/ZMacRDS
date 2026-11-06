@@ -1,4 +1,4 @@
-//! One loopback RDP entry point, with per-connection state and fixed UID routes.
+//! TLS RDP entry points with per-connection state and fixed UID routes.
 use super::{Secret, bridge, equal_secret, load_tls, private_file, private_file_owned, relay};
 use anyhow::{Context, Result, ensure};
 use ironrdp_server::{
@@ -28,6 +28,10 @@ use tokio::{
 struct Configuration {
     #[serde(default = "default_port")]
     port: u16,
+    #[serde(default)]
+    lan_port: Option<u16>,
+    #[serde(default)]
+    local_auth: bool,
     broker_uid: u32,
     certificate: PathBuf,
     private_key: PathBuf,
@@ -48,6 +52,11 @@ struct User {
 }
 fn service_width()->u16 {1920}
 fn service_height()->u16 {1200}
+fn valid_login_name(name:&str, local:bool)->bool {
+    !name.is_empty() && if local {
+        name.len()<=1024 && !name.chars().any(|c|c.is_control() || c=='/' || c=='\\')
+    } else {name.len()<=64 && name.bytes().all(|c|c.is_ascii_alphanumeric() || b"_-".contains(&c))}
+}
 struct Route {
     dynamic:bool,
     credentials: Secret,
@@ -59,6 +68,7 @@ struct Route {
 struct Routes {
     users: Vec<Arc<Route>>,
     size: DesktopSize,
+    local_auth: bool,
 }
 struct Lease {
     route: Arc<Route>,
@@ -66,16 +76,19 @@ struct Lease {
 }
 impl Routes {
     fn authenticate(&self, credentials: &Credentials) -> Option<Arc<Route>> {
-        if credentials.domain.as_ref().is_some_and(|v| !v.is_empty())
+        if (!self.local_auth && credentials.domain.as_ref().is_some_and(|v| !v.is_empty() && v != "."))
             || credentials.password.len() > 1024
         {
             return None;
         }
+        // Windows may supply .\user or a client domain. This service always
+        // verifies the canonical account in /Local/Default, never a domain.
+        let username = if self.local_auth { credentials.username.rsplit('\\').next()? } else { credentials.username.as_str() };
         let route = self
             .users
             .iter()
-            .find(|r| r.credentials.username == credentials.username)?;
-        if !equal_secret(
+            .find(|r| r.credentials.username.eq_ignore_ascii_case(username))?;
+        if !self.local_auth && !equal_secret(
             route.credentials.password.as_bytes(),
             credentials.password.as_bytes(),
         ) {
@@ -90,6 +103,9 @@ impl Routes {
     ) -> Option<Lease> {
         // Check the password first: an invalid attempt must not affect a live desktop.
         let route = self.authenticate(credentials)?;
+        if self.local_auth && !crate::local_auth::verify(route.bridge.uid(), &route.credentials.username, &credentials.password).await {
+            return None;
+        }
         {
             let mut latest = route.latest.lock().unwrap();
             if let Some(old) = latest.upgrade() {
@@ -124,8 +140,16 @@ fn default_port() -> u16 {
     3390
 }
 
+fn allowed_peer(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local() || u32::from(ip) & 0xffc00000 == 0x64400000,
+        std::net::IpAddr::V6(ip) => ip.is_loopback(),
+    }
+}
+
 pub struct Runtime {
     port: u16,
+    lan_port: Option<u16>,
     // Drop workers before unlinking the directory. stdin EOF is the lifetime
     // signal; the network process cannot kill a different UID after dropping.
     _workers: Vec<relay::Worker>,
@@ -143,8 +167,8 @@ pub fn bootstrap(path: &Path) -> Result<Runtime> {
     let config: Configuration =
         serde_json::from_slice(&bytes).context("invalid multi-user configuration")?;
     ensure!(
-        !config.users.is_empty() && config.users.len() <= 8,
-        "experimental limit: 1..8 configured users"
+        !config.users.is_empty() && config.users.len() <= 128,
+        "limit: 1..128 local accounts"
     );
     ensure!(
         config.certificate.is_absolute() && config.private_key.is_absolute(),
@@ -154,6 +178,9 @@ pub fn bootstrap(path: &Path) -> Result<Runtime> {
         config.port >= 1024,
         "only unprivileged loopback ports are supported"
     );
+    if let Some(port) = config.lan_port {
+        ensure!(port >= 1024 && port != config.port, "invalid LAN port");
+    }
     let broker_gid = relay::account_gid(config.broker_uid)?;
     let tls = load_tls(&config.certificate, &config.private_key)?;
     let mut names = HashSet::new();
@@ -168,18 +195,12 @@ pub fn bootstrap(path: &Path) -> Result<Runtime> {
         );
         let gid = relay::account_gid(user.uid)?;
         ensure!(
-            user.credentials.username.len() <= 64
-                && !user.credentials.username.is_empty()
-                && user
-                    .credentials
-                    .username
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+            valid_login_name(&user.credentials.username,config.local_auth)
                 && names.insert(user.credentials.username.clone()),
             "invalid or duplicate login name"
         );
         ensure!(
-            (16..=1024).contains(&user.credentials.password.len()),
+            config.local_auth || (16..=1024).contains(&user.credentials.password.len()),
             "invalid test password length"
         );
         ensure!(user.bridge.is_absolute(), "bridge path must be absolute");
@@ -232,11 +253,13 @@ pub fn bootstrap(path: &Path) -> Result<Runtime> {
     let (width, height) = size.unwrap();
     Ok(Runtime {
         port: config.port,
+        lan_port: config.lan_port,
         _workers: workers,
         _directory: directory,
         routes: Arc::new(Routes {
             users,
             size: DesktopSize { width, height },
+            local_auth: config.local_auth,
         }),
         tls,
     })
@@ -400,9 +423,13 @@ impl Runtime {
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let listener = TcpListener::bind(("127.0.0.1", self.port)).await?;
+        let lan = match self.lan_port {
+            Some(port) => Some(TcpListener::bind(("0.0.0.0", port)).await?),
+            None => None,
+        };
         println!(
             "{}",
-            json!({"event":"multi_starting","address":listener.local_addr()?.to_string(),"uid":unsafe{libc::geteuid()},"users":self.routes.users.len(),"security":"TLS","max_connections":16})
+            json!({"event":"multi_starting","address":listener.local_addr()?.to_string(),"lan_port":self.lan_port,"local_auth":self.routes.local_auth,"uid":unsafe{libc::geteuid()},"users":self.routes.users.len(),"security":"TLS","max_connections":16})
         );
         tokio::task::LocalSet::new().run_until(async {
             let mut tasks=JoinSet::new();let mut next=0u64;
@@ -413,9 +440,14 @@ impl Runtime {
                     _=terminate.recv()=>break,
                     _=health.tick()=>{for worker in &mut self._workers {ensure!(worker.healthy()?,"fixed-UID relay exited; restarting service is required");}},
                     Some(result)=tasks.join_next(),if !tasks.is_empty()=>{if let Err(error)=result {eprintln!("connection task: {error}");}},
-                    accepted=listener.accept()=>{
+                    accepted=async {
+                        match &lan {
+                            Some(lan) => tokio::select! { result=listener.accept()=>result, result=lan.accept()=>result },
+                            None => listener.accept().await,
+                        }
+                    }=>{
                         let(stream,peer)=accepted?;
-                        if !peer.ip().is_loopback() || tasks.len()>=16 {drop(stream);continue;}
+                        if !allowed_peer(peer.ip()) || tasks.len()>=16 {drop(stream);continue;}
                         next+=1;let connection=Connection::new(next);
                         let routes=self.routes.clone();let tls=self.tls.clone();let port=self.port;
                         tasks.spawn_local(async move {
@@ -464,8 +496,34 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn local_names_allow_unicode_but_not_protocol_injection() {
+        assert!(valid_login_name("测试用户",true));assert!(!valid_login_name("测试用户",false));
+        for name in ["", "a\nb", "DOMAIN\\name", "a/b"] {assert!(!valid_login_name(name,true));}
+    }
+    #[test]
+    fn direct_entry_accepts_private_networks_but_rejects_public_and_multicast() {
+        for address in ["127.0.0.1", "10.1.2.3", "172.16.2.1", "192.168.64.1", "169.254.2.1", "100.64.0.1", "100.127.255.254", "::1"] {
+            assert!(allowed_peer(address.parse().unwrap()), "{address}");
+        }
+        for address in ["8.8.8.8", "172.32.0.1", "100.128.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "2001:4860:4860::8888"] {
+            assert!(!allowed_peer(address.parse().unwrap()), "{address}");
+        }
+    }
+    #[tokio::test]
+    async fn failed_system_authentication_cannot_take_over_a_valid_lease() {
+        let mut routes=routes();
+        let current=Connection::new(1);
+        let lease=routes.claim(&credentials(502), &current).await.unwrap();
+        // Switch only the verifier, preserving this user's live controller.
+        Arc::get_mut(&mut routes).unwrap().local_auth=true;
+        let attempt=Connection::new(2);
+        let mut login=credentials(502);login.password.clear();
+        login.username=".\\USER502".into();login.domain=Some("WORKGROUP".into());
+        assert!(routes.claim(&login,&attempt).await.is_none());
+        assert!(!*current.revoked.borrow());drop(lease);
+    }
     fn routes() -> Arc<Routes> {
-        Arc::new(Routes{size:DesktopSize{width:1920,height:1200},users:[502,503].into_iter().map(|uid| {
+        Arc::new(Routes{local_auth:false,size:DesktopSize{width:1920,height:1200},users:[502,503].into_iter().map(|uid| {
             let bridge=serde_json::from_value(json!({"uid":uid,"audit_session_id":uid+10,"nonce":uid+20,"epoch":1,"boot_id":"test","socket":"/tmp/zmacrds-m2-test/agent.sock","width":1920,"height":1200,"schema":1})).unwrap();
             Arc::new(Route{dynamic:false,credentials:Secret{username:format!("user{uid}"),password:format!("test-password-for-{uid}")},bridge,socket:PathBuf::from("/not-connected-in-unit-test"),controller:Arc::new(Semaphore::new(1)),latest:Mutex::new(Weak::new())})
         }).collect()})

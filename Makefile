@@ -15,7 +15,7 @@ management: build/zmacrds-control build/ZMacRDS-Manager.app/Contents/MacOS/ZMacR
 
 build/zmacrds-control: tools/service-controller.m tools/service-protocol.h Makefile
 	@mkdir -p build
-	xcrun clang -mmacosx-version-min=$(MACOS_MIN) -Wall -Wextra -Werror -fobjc-arc -O2 -framework Foundation -framework Security $< -o $@
+	xcrun clang -mmacosx-version-min=$(MACOS_MIN) -Wall -Wextra -Werror -fobjc-arc -O2 -framework Foundation -framework Security -framework OpenDirectory $< -o $@
 	codesign --force --sign "$(SIGN_IDENTITY)" --timestamp=none --identifier org.zmacrds.control $@
 
 build/ZMacRDS-Manager.app/Contents/MacOS/ZMacRDSManager: tools/service-manager.m tools/service-protocol.h tools/Manager-Info.plist Makefile
@@ -110,7 +110,7 @@ build/ZMacRDS-Desktop.app/Contents/MacOS/M1Agent: build/ZMacRDS-M1.app/Contents/
 	plutil -replace CFBundleIdentifier -string org.zmacrds.desktop build/ZMacRDS-Desktop.app/Contents/Info.plist
 	plutil -replace CFBundleName -string "ZMacRDS Desktop" build/ZMacRDS-Desktop.app/Contents/Info.plist
 	plutil -replace CFBundleDisplayName -string "ZMacRDS Desktop" build/ZMacRDS-Desktop.app/Contents/Info.plist
-	plutil -replace CFBundleShortVersionString -string "0.3.0" build/ZMacRDS-Desktop.app/Contents/Info.plist
+	plutil -replace CFBundleShortVersionString -string "0.3.1" build/ZMacRDS-Desktop.app/Contents/Info.plist
 	plutil -replace NSScreenCaptureUsageDescription -string "将当前登录账号自己的桌面发送给已验证的远程连接。" build/ZMacRDS-Desktop.app/Contents/Info.plist
 	codesign --force --sign "$(SIGN_IDENTITY)" --timestamp=none --identifier org.zmacrds.desktop build/ZMacRDS-Desktop.app
 

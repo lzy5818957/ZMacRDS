@@ -38,16 +38,16 @@ static NSButton *button(NSString *title,id target,SEL action) {
         [root.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-24]]];
     [root addArrangedSubview:label(@"远程桌面服务",26,YES)];
     [root addArrangedSubview:label(@"查看账号、桌面权限和 RDP 连接。断开连接会保留用户的桌面应用。",13,NO)];
-    self.serverLabel=label(@"正在读取服务状态…",15,YES);[root addArrangedSubview:self.serverLabel];
+    self.serverLabel=label(@"正在读取服务状态…",15,YES);self.serverLabel.maximumNumberOfLines=3;[root addArrangedSubview:self.serverLabel];[self.serverLabel.widthAnchor constraintEqualToAnchor:root.widthAnchor].active=YES;
     self.unlock=button(@"验证管理员…",self,@selector(unlockAction:));self.unlock.identifier=@"manager.unlock";
     NSStackView *serverActions=[NSStackView stackViewWithViews:@[
         button(@"刷新",self,@selector(refreshAction:)),self.unlock,
         button(@"启动服务",self,@selector(startServer:)),button(@"重启服务",self,@selector(restartServer:)),
-        button(@"停止服务",self,@selector(stopServer:)),button(@"配置用户…",self,@selector(configureUsers:))]];serverActions.spacing=10;[root addArrangedSubview:serverActions];
+        button(@"停止服务",self,@selector(stopServer:)),button(@"连接设置…",self,@selector(networkSettings:)),button(@"系统共享设置…",self,@selector(sharingSettings:))]];serverActions.spacing=10;[root addArrangedSubview:serverActions];
     self.scope=label(@"",12,NO);self.scope.textColor=NSColor.secondaryLabelColor;[root addArrangedSubview:self.scope];
     NSScrollView *scroll=[NSScrollView new];scroll.hasVerticalScroller=YES;scroll.borderType=NSBezelBorder;
     self.table=[NSTableView new];self.table.dataSource=self;self.table.delegate=self;self.table.rowHeight=48;self.table.usesAlternatingRowBackgroundColors=YES;
-    NSArray *columns=@[@[@"username",@"账号",@130],@[@"desktop",@"桌面代理",@130],@[@"permissions",@"权限",@170],@[@"connection",@"RDP 连接",@120],@[@"mode",@"运行方式",@120],@[@"detail",@"状态说明",@300]];
+    NSArray *columns=@[@[@"username",@"账号",@130],@[@"desktop",@"桌面代理",@130],@[@"permissions",@"权限",@170],@[@"connection",@"RDP 连接",@120],@[@"mode",@"登录状态",@120],@[@"detail",@"状态说明",@300]];
     for(NSArray *c in columns){NSTableColumn *column=[[NSTableColumn alloc] initWithIdentifier:c[0]];column.title=c[1];column.width=[c[2] doubleValue];column.minWidth=90;[self.table addTableColumn:column];}
     scroll.documentView=self.table;[root addArrangedSubview:scroll];
     scroll.translatesAutoresizingMaskIntoConstraints=NO;
@@ -58,7 +58,7 @@ static NSButton *button(NSString *title,id target,SEL action) {
         button(@"启动桌面代理",self,@selector(startUser:)),
         button(@"重启桌面代理",self,@selector(restartUser:)),
         button(@"停止桌面代理",self,@selector(stopUser:)),button(@"连接信息…",self,@selector(connectionInfo:))]];userActions.spacing=10;[root addArrangedSubview:userActions];
-    NSTextField *note=label(@"录屏和键鼠权限需要在对应账号中授权。可从该账号菜单栏的 ZMacRDS 打开系统设置。",12,NO);note.textColor=NSColor.secondaryLabelColor;[root addArrangedSubview:note];
+    NSTextField *note=label(@"首次使用需在各账号授权录屏和键鼠。开启系统屏幕共享并允许对应用户后，RDP 可按需启动未登录的用户桌面。",12,NO);note.textColor=NSColor.secondaryLabelColor;note.maximumNumberOfLines=2;[root addArrangedSubview:note];[note.widthAnchor constraintEqualToAnchor:root.widthAnchor].active=YES;
     self.message=label(@"",12,NO);self.message.lineBreakMode=NSLineBreakByWordWrapping;self.message.maximumNumberOfLines=3;[root addArrangedSubview:self.message];[self.message.widthAnchor constraintEqualToAnchor:root.widthAnchor].active=YES;
     NSMenu *menu=[NSMenu new];NSMenuItem *app=[NSMenuItem new];NSMenu *submenu=[NSMenu new];app.submenu=submenu;[menu addItem:app];
     [submenu addItemWithTitle:@"退出 ZMacRDS 管理" action:@selector(terminate:) keyEquivalent:@"q"];NSApp.mainMenu=menu;
@@ -81,9 +81,10 @@ static NSButton *button(NSString *title,id target,SEL action) {
         return [row[@"screen_capture"] boolValue] ? @"需要键鼠授权" : @"需要录屏授权";
     }
     if([column isEqual:@"connection"])return !fresh || !row[@"rdp_connected"] ? @"未知" : [row[@"rdp_connected"] boolValue] ? @"已连接" : @"未连接";
-    if([column isEqual:@"mode"])return !fresh ? @"—" : [row[@"background"] boolValue] ? @"后台运行" : @"诊断界面";
+    if([column isEqual:@"mode"])return [row[@"logged_in"] boolValue] ? @"已登录 Mac" : @"尚未登录桌面";
     if([row[@"capture_error"] length])return row[@"capture_error"];
-    if(!fresh)return loaded ? @"正在等待桌面状态" : @"启动代理；若失败，请先在本机登录该账号";
+    if([row[@"login_error"] length])return row[@"login_error"];
+    if(!fresh)return ![row[@"logged_in"] boolValue] ? @"连接时尝试自动登录；首次使用需完成系统设置和授权" : loaded ? @"正在等待桌面状态" : @"桌面已登录，启动代理以准备连接";
     if(!row[@"capturing"])return @"升级桌面代理后可显示完整状态";
     if([row[@"capture_paused"] boolValue])return @"采集暂停；等待正常唤醒或解锁";
     return [row[@"capturing"] boolValue] ? @"桌面采集正常" : @"等待采集或系统授权";
@@ -112,8 +113,13 @@ static NSButton *button(NSString *title,id target,SEL action) {
             NSDictionary *broker=reply[@"broker"];BOOL running=[broker[@"state"] isEqual:@"running"];
             self.serverLabel.stringValue=running ? @"● RDP 服务运行中" : [broker[@"loaded"] boolValue] ? @"● RDP 服务正在启动" : @"○ RDP 服务已停止";
             self.serverLabel.textColor=running ? NSColor.systemGreenColor : NSColor.secondaryLabelColor;
-            if([reply[@"setup_required"] boolValue]){self.serverLabel.stringValue=@"○ 尚未配置服务账号";self.message.stringValue=@"点击“配置用户…”完成首次设置。";}
-            self.scope.stringValue=[reply[@"all_accounts"] boolValue] ? @"显示已配置的服务账号；系统服务及其他账号操作需要管理员验证。" : @"当前只显示本账号。验证管理员后可查看和管理其他服务账号。";
+            if([reply[@"setup_required"] boolValue]){self.serverLabel.stringValue=@"○ 服务尚未启动";self.message.stringValue=@"点击“启动服务”。软件自动识别此 Mac 的本地用户，使用原有 Mac 登录密码。";}
+            else if([reply[@"lan_port"] isKindOfClass:NSNumber.class]) {
+                NSMutableArray *endpoints=NSMutableArray.new;
+                for(NSString *address in reply[@"addresses"])[endpoints addObject:[reply[@"lan_port"] intValue]==3389 ? address : [NSString stringWithFormat:@"%@:%@",address,reply[@"lan_port"]]];
+                self.serverLabel.stringValue=[self.serverLabel.stringValue stringByAppendingFormat:@"  ·  %@",endpoints.count ? [endpoints componentsJoinedByString:@" / "] : @"等待局域网地址"];
+            }
+            self.scope.stringValue=[reply[@"all_accounts"] boolValue] ? @"本地用户及其桌面登录状态；已连接显示当前 RDP 会话。系统操作需要管理员验证。" : @"当前只显示本账号。验证管理员后可查看和管理其他服务账号。";
         });
     });
 }
@@ -139,57 +145,48 @@ static NSButton *button(NSString *title,id target,SEL action) {
     else if([self authenticate])self.message.stringValue=@"管理员验证完成";
     [self refreshAction:nil];
 }
-- (void)submitConfiguration:(NSNumber *)broker desktops:(NSArray *)desktops retried:(BOOL)retried {
-    self.busy=YES;self.message.stringValue=@"正在保存配置并启动服务，请稍候…";
-    NSMutableDictionary *request=[self request:@"configure" uid:nil];request[@"broker_uid"]=broker;request[@"desktop_uids"]=desktops;
+- (void)applyConnectionSettings:(BOOL)enabled port:(NSNumber *)port start:(BOOL)start retried:(BOOL)retried {
+    if(self.busy)return;
+    if(!self.authorizationForm && ![self authenticate])return;
+    self.busy=YES;self.message.stringValue=start ? @"正在启动服务并识别本地用户…" : @"正在保存连接设置…";
+    NSMutableDictionary *request=[self request:start ? @"configure-local" : @"configure-network" uid:nil];
+    request[@"enabled"]=@(enabled);request[@"port"]=port;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
         NSDictionary *reply=zrRequest(request);dispatch_async(dispatch_get_main_queue(),^{
             self.busy=NO;
             if(!retried && [reply[@"error"] isEqual:@"authorization_required"]) {
-                [self lockAuthorization];if([self authenticate])[self submitConfiguration:broker desktops:desktops retried:YES];return;
+                [self lockAuthorization];if([self authenticate])[self applyConnectionSettings:enabled port:port start:start retried:YES];return;
             }
-            self.message.stringValue=reply[@"message"] ?: @"配置未完成，请刷新服务状态";[self refreshAction:nil];
+            self.message.stringValue=reply[@"message"] ?: @"操作未完成，请刷新服务状态";[self refreshAction:nil];
         });
     });
 }
-- (void)showConfiguration:(NSDictionary *)info {
-    NSArray *accounts=info[@"accounts"],*configured=info[@"desktop_uids"];
-    if(!accounts.count){self.message.stringValue=@"请先在系统设置创建本地用户，再重新配置。";return;}
-    NSAlert *alert=NSAlert.new;alert.messageText=@"配置服务账号";
-    alert.informativeText=@"选择允许通过 RDP 使用的本地用户。已有账号和连接口令会保留；保存时 RDP 将重新连接，桌面应用会保留。新增用户需要先登录并授权录屏与键鼠。";
-    [alert addButtonWithTitle:@"保存配置"];[alert addButtonWithTitle:@"取消"];
-    NSView *accessory=[[NSView alloc] initWithFrame:NSMakeRect(0,0,580,390)];
-    NSTextField *title=label(@"服务运行账号（不能同时作为远程桌面账号）",13,YES);title.frame=NSMakeRect(0,358,580,24);[accessory addSubview:title];
-    NSPopUpButton *broker=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,320,580,30) pullsDown:NO];
-    NSNumber *current=info[@"broker_uid"]==NSNull.null ? nil : info[@"broker_uid"];
-    for(NSDictionary *account in accounts){[broker addItemWithTitle:account[@"username"]];broker.lastItem.representedObject=account[@"uid"];if([account[@"uid"] isEqual:current])[broker selectItem:broker.lastItem];}
-    broker.enabled=!current;[accessory addSubview:broker];
-    NSTextField *desktops=label(@"远程桌面账号（最多 8 个，已有账号保留）",13,YES);desktops.frame=NSMakeRect(0,280,580,24);[accessory addSubview:desktops];
-    NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,0,580,270)];scroll.hasVerticalScroller=YES;scroll.borderType=NSBezelBorder;
-    CGFloat height=MAX(270,accounts.count*30);NSView *document=[[NSView alloc] initWithFrame:NSMakeRect(0,0,550,height)];NSMutableArray<NSButton *> *choices=NSMutableArray.new;
-    for(NSUInteger index=0;index<accounts.count;index++) {
-        NSDictionary *account=accounts[index];NSButton *choice=[NSButton checkboxWithTitle:account[@"username"] target:nil action:nil];choice.frame=NSMakeRect(12,height-30*(index+1),520,28);choice.tag=[account[@"uid"] integerValue];
-        BOOL already=[configured containsObject:account[@"uid"]];choice.state=already ? NSControlStateValueOn : NSControlStateValueOff;
-        choice.enabled=!already && ![account[@"uid"] isEqual:current];[choices addObject:choice];[document addSubview:choice];
-    }
-    scroll.documentView=document;[accessory addSubview:scroll];alert.accessoryView=accessory;
-    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response){
-        if(response!=NSAlertFirstButtonReturn)return;
-        NSMutableArray *selected=NSMutableArray.new;for(NSButton *choice in choices)if(choice.state==NSControlStateValueOn)[selected addObject:@(choice.tag)];
-        NSNumber *service=broker.selectedItem.representedObject;
-        if(!service || selected.count<1 || selected.count>8 || [selected containsObject:service]){self.message.stringValue=@"请选择 1–8 个桌面账号，并选择不同的服务运行账号。";return;}
-        [self submitConfiguration:service desktops:selected retried:NO];
-    }];
-}
-- (void)configureUsers:(id)sender {
+- (void)sharingSettings:(id)sender {(void)sender;[NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.Sharing-Settings.extension"]];}
+- (void)networkSettings:(id)sender {
     (void)sender;if(self.busy)return;
     if(!self.authorizationForm && ![self authenticate])return;
     self.busy=YES;NSDictionary *request=[self request:@"setup-info" uid:nil];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
         NSDictionary *reply=zrRequest(request);dispatch_async(dispatch_get_main_queue(),^{
             self.busy=NO;
-            if([reply[@"ok"] boolValue])[self showConfiguration:reply];
-            else {if([reply[@"error"] isEqual:@"authorization_required"])[self lockAuthorization];self.message.stringValue=reply[@"message"] ?: @"无法读取账号列表，请重新验证管理员。";}
+            if(![reply[@"ok"] boolValue]){self.message.stringValue=reply[@"message"] ?: @"无法读取连接设置";return;}
+            NSDictionary *settings=reply[@"network"];
+            NSAlert *alert=NSAlert.new;alert.messageText=@"客户端连接设置";
+            alert.informativeText=@"局域网内的 Mac 和 Windows 可直接输入服务器 IP、本地用户名及 Mac 登录密码连接。默认端口 3389 无需在客户端额外填写端口。已有连接可能需要重连。";
+            [alert addButtonWithTitle:@"保存"];[alert addButtonWithTitle:@"取消"];
+            NSView *view=[[NSView alloc] initWithFrame:NSMakeRect(0,0,560,160)];
+            NSButton *enabled=[NSButton checkboxWithTitle:@"允许局域网直接连接 RDP" target:nil action:nil];enabled.frame=NSMakeRect(0,120,560,28);
+            enabled.state=[settings[@"enabled"] boolValue] || [self.snapshot[@"setup_required"] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;[view addSubview:enabled];
+            NSTextField *caption=label(@"RDP 端口",13,YES);caption.frame=NSMakeRect(0,82,100,24);[view addSubview:caption];
+            NSTextField *port=[[NSTextField alloc] initWithFrame:NSMakeRect(110,82,120,24)];port.stringValue=[settings[@"port"] stringValue] ?: @"3389";[view addSubview:port];
+            NSTextField *addresses=label([@"此 Mac 的地址：" stringByAppendingString:[settings[@"addresses"] count] ? [settings[@"addresses"] componentsJoinedByString:@"、"] : @"暂无可用局域网 IPv4 地址"],12,NO);
+            addresses.frame=NSMakeRect(0,14,560,55);addresses.maximumNumberOfLines=3;addresses.selectable=YES;[view addSubview:addresses];alert.accessoryView=view;
+            [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response){
+                if(response!=NSAlertFirstButtonReturn)return;
+                NSString *value=port.stringValue;NSCharacterSet *digits=NSCharacterSet.decimalDigitCharacterSet;
+                if(!value.length || [value rangeOfCharacterFromSet:digits.invertedSet].location!=NSNotFound || value.integerValue<1024 || value.integerValue>65535 || value.integerValue==3390){self.message.stringValue=@"请输入 1024–65535 的端口，3390 为保留端口。";return;}
+                [self applyConnectionSettings:enabled.state==NSControlStateValueOn port:@(value.integerValue) start:[self.snapshot[@"setup_required"] boolValue] retried:NO];
+            }];
         });
     });
 }
@@ -201,15 +198,24 @@ static NSButton *button(NSString *title,id target,SEL action) {
             if(!retried && [reply[@"error"] isEqual:@"authorization_required"]){[self lockAuthorization];if([self authenticate])[self connectionInfoUID:uid retried:YES];return;}
             if(![reply[@"ok"] boolValue]){self.message.stringValue=reply[@"message"] ?: @"无法读取连接信息";return;}
             NSAlert *alert=NSAlert.new;alert.messageText=@"RDP 连接信息";
-            alert.informativeText=@"通过已核对服务器身份的安全隧道连接。这是独立的 RDP 口令；苹果屏幕共享仍使用 Mac 登录密码。";
-            [alert addButtonWithTitle:@"关闭"];[alert addButtonWithTitle:@"复制登录信息"];
+            BOOL local=[reply[@"local_auth"] boolValue];
+            alert.informativeText=local ? @"在客户端输入下方服务器地址、本地用户名和该用户的 Mac 登录密码。首次连接核对证书指纹。" : @"旧版连接仍使用独立口令；点击主窗口的启动服务可切换为 Mac 本地账号登录。";
+            [alert addButtonWithTitle:@"关闭"];[alert addButtonWithTitle:@"复制登录信息"];[alert addButtonWithTitle:@"导出 RDP 文件…"];
             NSStackView *fields=[NSStackView stackViewWithViews:@[]];fields.orientation=NSUserInterfaceLayoutOrientationVertical;fields.alignment=NSLayoutAttributeLeading;fields.spacing=10;
             for(NSString *key in @[@"endpoint",@"username"]) {NSTextField *field=label([NSString stringWithFormat:@"%@：%@",[key isEqual:@"endpoint"] ? @"连接地址" : @"用户名",reply[key]],13,NO);field.selectable=YES;[fields addArrangedSubview:field];}
-            NSSecureTextField *password=[[NSSecureTextField alloc] initWithFrame:NSMakeRect(0,0,550,24)];password.stringValue=reply[@"password"];password.editable=NO;password.selectable=YES;password.placeholderString=@"RDP 口令";[fields addArrangedSubview:password];[password.widthAnchor constraintEqualToConstant:550].active=YES;
+            NSSecureTextField *password=[[NSSecureTextField alloc] initWithFrame:NSMakeRect(0,0,550,24)];password.stringValue=reply[@"password"];password.editable=NO;password.selectable=YES;password.placeholderString=@"RDP 口令";if(local)[fields addArrangedSubview:label(@"密码：使用此用户的 Mac 登录密码",13,YES)];else {[fields addArrangedSubview:password];[password.widthAnchor constraintEqualToConstant:550].active=YES;}
             NSTextField *fingerprint=label([@"证书 SHA-256：\n" stringByAppendingString:reply[@"sha256"]],12,NO);fingerprint.selectable=YES;fingerprint.maximumNumberOfLines=4;fingerprint.lineBreakMode=NSLineBreakByCharWrapping;[fields addArrangedSubview:fingerprint];[fingerprint.widthAnchor constraintEqualToConstant:550].active=YES;
             fields.frame=NSMakeRect(0,0,550,180);alert.accessoryView=fields;
             [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response){
-                if(response==NSAlertSecondButtonReturn){[NSPasteboard.generalPasteboard clearContents];[NSPasteboard.generalPasteboard setString:[NSString stringWithFormat:@"地址：%@\n用户名：%@\nRDP 口令：%@\n证书 SHA-256：%@",reply[@"endpoint"],reply[@"username"],reply[@"password"],reply[@"sha256"]] forType:NSPasteboardTypeString];}
+                if(response==NSAlertSecondButtonReturn){[NSPasteboard.generalPasteboard clearContents];[NSPasteboard.generalPasteboard setString:[NSString stringWithFormat:@"地址：%@\n用户名：%@\nRDP 口令：%@\n证书 SHA-256：%@",reply[@"endpoint"],reply[@"username"],local ? @"使用该用户的 Mac 登录密码" : reply[@"password"],reply[@"sha256"]] forType:NSPasteboardTypeString];}
+                if(response==NSAlertThirdButtonReturn) {
+                    NSSavePanel *panel=NSSavePanel.savePanel;panel.nameFieldStringValue=[NSString stringWithFormat:@"ZMacRDS-%@.rdp",reply[@"username"]];
+                    [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse result){
+                        if(result!=NSModalResponseOK)return;
+                        NSString *profile=[NSString stringWithFormat:@"full address:s:%@\r\nusername:s:%@\r\ndesktopwidth:i:1920\r\ndesktopheight:i:1200\r\nscreen mode id:i:1\r\ndynamic resolution:i:0\r\nsmart sizing:i:1\r\naudiomode:i:0\r\naudiocapturemode:i:0\r\nredirectclipboard:i:0\r\ndrivestoredirect:s:\r\nprompt for credentials:i:1\r\nauthentication level:i:2\r\n",reply[@"endpoint"],reply[@"username"]];
+                        NSError *error=nil;if(![profile writeToURL:panel.URL atomically:YES encoding:NSUTF8StringEncoding error:&error])self.message.stringValue=@"连接文件未保存，请检查目标文件夹。";
+                    }];
+                }
                 password.stringValue=@"";
             }];
         });
@@ -248,7 +254,11 @@ static NSButton *button(NSString *title,id target,SEL action) {
     if(index<0 || index>=(NSInteger)self.users.count){self.message.stringValue=@"请先选择账号";return;}
     [self operate:action uid:self.users[index][@"uid"] confirmed:NO];
 }
-- (void)startServer:(id)sender {(void)sender;[self operate:@"start-server" uid:nil confirmed:NO];}
+- (void)startServer:(id)sender {
+    (void)sender;id port=self.snapshot[@"lan_port"];
+    BOOL existing=[self.snapshot[@"local_auth"] boolValue];
+    [self applyConnectionSettings:!existing || [port isKindOfClass:NSNumber.class] port:[port isKindOfClass:NSNumber.class] ? port : @3389 start:YES retried:NO];
+}
 - (void)stopServer:(id)sender {(void)sender;[self operate:@"stop-server" uid:nil confirmed:NO];}
 - (void)restartServer:(id)sender {(void)sender;[self operate:@"restart-server" uid:nil confirmed:NO];}
 - (void)disconnectUser:(id)sender {(void)sender;[self userAction:@"disconnect-rdp"];}

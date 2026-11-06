@@ -505,7 +505,7 @@
         @"screen_capture_preflight":@(CGPreflightScreenCaptureAccess()),@"connected":@(self.connected),@"epoch":@(self.epoch)}];
     NSMutableDictionary *state=[identity() mutableCopy];
     [state addEntriesFromDictionary:@{@"run_id":self.run,@"nonce":@(self.nonce),@"epoch":@(self.epoch),@"connected":@(self.connected),@"pid":@(getpid()),@"boot_id":kernelString("kern.bootsessionuuid"),@"uptime_ms":@(nowMS()),
-        @"management_schema":@1,@"background":@(self.backgroundMode),@"screen_capture":@(CGPreflightScreenCaptureAccess()),
+        @"management_schema":@1,@"guardian_pid":self.guardian[@"pid"] ?: @0,@"background":@(self.backgroundMode),@"screen_capture":@(CGPreflightScreenCaptureAccess()),
         @"accessibility":@(AXIsProcessTrusted()),@"capturing":@(self.capturing),
         @"rdp_connected":@(self.bridge.client>=0),@"capture_paused":@(self.bridge.capturePaused),
         @"last_capture_ms":@(self.bridge.lastCaptureSignal),@"display_id":@(self.targetDisplay),

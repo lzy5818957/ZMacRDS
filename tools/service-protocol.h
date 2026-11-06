@@ -54,7 +54,7 @@ static inline NSDictionary *zrRequest(NSDictionary *value) {
     struct sockaddr_un address={0};address.sun_family=AF_UNIX;strlcpy(address.sun_path,ZR_CONTROL_SOCKET,sizeof(address.sun_path));
     uid_t uid;gid_t gid;NSDictionary *reply;
     if(connect(fd,(struct sockaddr *)&address,sizeof(address))==0 && getpeereid(fd,&uid,&gid)==0 && uid==0 && zrWriteMessage(fd,value)) {
-        unsigned wait=([value[@"action"] isEqual:@"configure"] || [value[@"action"] isEqual:@"prepare-upgrade"]) ? 120000 : 5000;
+        unsigned wait=([value[@"action"] hasPrefix:@"configure"] || [value[@"action"] isEqual:@"prepare-upgrade"]) ? 120000 : 10000;
         NSData *data=zrReadMessage(fd,262144,wait);
         id object=data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
         if([object isKindOfClass:NSDictionary.class])reply=object;

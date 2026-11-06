@@ -1,6 +1,9 @@
 #import "service-protocol.h"
 #import <Security/Authorization.h>
 #import <Security/AuthorizationDB.h>
+#import <OpenDirectory/OpenDirectory.h>
+#include <ifaddrs.h>
+#include <arpa/inet.h>
 #include <launch.h>
 #include <pwd.h>
 #include <grp.h>
@@ -17,6 +20,10 @@ static NSString *const Config=@"/Library/Application Support/ZMacRDS/server.json
 static NSString *const Agent=@"/Applications/ZMacRDS Desktop.app/Contents/MacOS/M1Agent";
 static NSLock *ActionLock;
 static BOOL Installing;
+static NSLock *AuthenticationLock;
+static NSMutableDictionary *AuthenticationFailures;
+static NSMutableDictionary *LoginMessages;
+static NSLock *DesktopOpeningLock;
 
 static uint64_t uptimeMS(void) {
     struct timespec ts;clock_gettime(CLOCK_MONOTONIC_RAW,&ts);
@@ -108,7 +115,7 @@ static NSDictionary *job(NSString *target) {
 }
 static NSArray *routes(void) {
     NSDictionary *config=jsonFile(Config,0,YES);id users=config[@"users"];
-    if(![users isKindOfClass:NSArray.class] || [users count]<1 || [users count]>8)return nil;
+    if(![users isKindOfClass:NSArray.class] || [users count]<1 || [users count]>128)return nil;
     NSMutableArray *rows=[NSMutableArray new];NSMutableSet *seen=[NSMutableSet new];
     for(id value in users) {
         if(![value isKindOfClass:NSDictionary.class])return nil;
@@ -129,6 +136,8 @@ static NSDictionary *agentState(NSDictionary *route) {
     // path and owner are correct; malformed metadata must not crash root.
     for(NSString *key in @[@"uptime_ms",@"login_complete",@"nonce",@"audit_session_id"])
         if(![state[key] isKindOfClass:NSNumber.class])return nil;
+    for(NSString *key in @[@"last_capture_ms",@"capturing",@"capture_paused",@"screen_capture",@"accessibility"])
+        if(state[key] && ![state[key] isKindOfClass:NSNumber.class])return nil;
     if([state[@"uptime_ms"] doubleValue]<0 || [state[@"uptime_ms"] doubleValue]>1e15 ||
        ![state[@"nonce"] unsignedIntValue] || [state[@"nonce"] unsignedLongLongValue]>UINT32_MAX ||
        ![state[@"audit_session_id"] unsignedIntValue])return nil;
@@ -145,6 +154,9 @@ static NSDictionary *status(uid_t peer,NSDictionary *request,NSArray *configured
         NSDictionary *state=agentState(route);uint64_t now=uptimeMS(),at=[state[@"uptime_ms"] unsignedLongLongValue];
         BOOL fresh=state && at<=now && now-at<6000;
         row[@"fresh"]=@(fresh);row[@"session_available"]=@(state && [state[@"login_complete"] boolValue]);
+        row[@"logged_in"]=job([NSString stringWithFormat:@"gui/%u",uid])[@"loaded"];
+        [AuthenticationLock lock];NSString *loginMessage=LoginMessages[@(uid)];[AuthenticationLock unlock];
+        if(loginMessage)row[@"login_error"]=loginMessage;
         if(fresh) {
             // Explicit allowlist: never copy a configuration, document, token or argv.
             for(NSString *key in @[@"pid",@"background",@"screen_capture",@"accessibility",@"capturing",@"rdp_connected",@"capture_paused",@"display_id",@"audit_session_id"])
@@ -154,7 +166,19 @@ static NSDictionary *status(uid_t peer,NSDictionary *request,NSArray *configured
         }
         [users addObject:row];
     }
-    return @{@"ok":@YES,@"schema":@1,@"peer_uid":@(peer),@"all_accounts":@(all),@"broker":job(@"system/org.zmacrds.server"),@"users":users};
+    NSDictionary *config=jsonFile(Config,0,YES);NSMutableArray *addresses=NSMutableArray.new;
+    struct ifaddrs *interfaces=NULL;
+    if(getifaddrs(&interfaces)==0) {
+        for(struct ifaddrs *p=interfaces;p;p=p->ifa_next) {
+            if(!p->ifa_addr || p->ifa_addr->sa_family!=AF_INET)continue;
+            struct sockaddr_in *address=(struct sockaddr_in *)p->ifa_addr;uint32_t ip=ntohl(address->sin_addr.s_addr);
+            if((ip>>24)!=10 && (ip>>20)!=0xac1 && (ip>>16)!=0xc0a8 && (ip>>16)!=0xa9fe && (ip&0xffc00000)!=0x64400000)continue;
+            char text[INET_ADDRSTRLEN];if(inet_ntop(AF_INET,&address->sin_addr,text,sizeof(text)) && ![addresses containsObject:@(text)])[addresses addObject:@(text)];
+        }
+        freeifaddrs(interfaces);
+    }
+    return @{@"ok":@YES,@"schema":@1,@"peer_uid":@(peer),@"all_accounts":@(all),@"broker":job(@"system/org.zmacrds.server"),@"users":users,
+        @"local_auth":@([config[@"local_auth"] boolValue]),@"lan_port":config[@"lan_port"] ?: NSNull.null,@"addresses":addresses};
 }
 static BOOL trustedFile(NSString *path) {return privateFile(path,0,1048576,NO)!=nil;}
 static BOOL trustedRuntime(void) {
@@ -177,7 +201,7 @@ static NSDictionary *setupTask(NSString *operation,NSDictionary *value) {
     BOOL sent=write(incoming.fileHandleForWriting.fileDescriptor,input.bytes,input.length)==(ssize_t)input.length;
     [incoming.fileHandleForWriting closeFile];
     int fd=outgoing.fileHandleForReading.fileDescriptor;fcntl(fd,F_SETFL,fcntl(fd,F_GETFL)|O_NONBLOCK);
-    NSMutableData *data=NSMutableData.new;uint8_t bytes[4096];uint64_t deadline=uptimeMS()+([operation isEqual:@"configure"] ? 90000 : 3000);
+    NSMutableData *data=NSMutableData.new;uint8_t bytes[4096];uint64_t deadline=uptimeMS()+(([operation hasPrefix:@"configure"] || [operation isEqual:@"sync-local-users"] || [operation isEqual:@"open-desktop"]) ? 90000 : 3000);
     BOOL bounded=sent;
     while(bounded) {
         ssize_t n;while((n=read(fd,bytes,sizeof(bytes)))>0) {
@@ -215,14 +239,83 @@ static BOOL disconnect(NSDictionary *route) {
     if(ok)ok=rename(temporary.fileSystemRepresentation,path.fileSystemRepresentation)==0;
     unlink(temporary.fileSystemRepresentation);return ok;
 }
-static NSDictionary *handle(uid_t peer,NSDictionary *request) {
+static NSDictionary *authenticateRDP(uid_t peer,pid_t peerPID,NSDictionary *request) {
+    NSDictionary *config=jsonFile(Config,0,YES);uid_t target;
+    if(![config[@"local_auth"] isEqual:@YES] || ![config[@"broker_uid"] isEqual:@(peer)] ||
+        !integer(request[@"uid"],&target))return failure(@"denied",@"登录未通过");
+    struct proc_bsdinfo process={0};char executable[PROC_PIDPATHINFO_MAXSIZE]={0};
+    if(peerPID<=1 || proc_pidinfo(peerPID,PROC_PIDTBSDINFO,0,&process,sizeof(process))!=sizeof(process) ||
+        process.pbi_uid!=peer || process.pbi_ruid!=peer || proc_pidpath(peerPID,executable,sizeof(executable))<=0 ||
+        strcmp(executable,"/usr/local/libexec/zmacrds-server"))return failure(@"denied",@"登录未通过");
+    NSString *name=request[@"username"],*password=request[@"password"];
+    if(![name isKindOfClass:NSString.class] || ![password isKindOfClass:NSString.class] ||
+        name.length<1 || name.length>256 || password.length<1 || [password lengthOfBytesUsingEncoding:NSUTF8StringEncoding]>1024 ||
+        [password rangeOfString:[NSString stringWithFormat:@"%C",(unichar)0]].location!=NSNotFound)return failure(@"denied",@"登录未通过");
+    struct passwd storage,*account=NULL;char buffer[16384];
+    if(getpwuid_r(target,&storage,buffer,sizeof(buffer),&account)!=0 || !account || account->pw_name[0]=='_' ||
+        strncmp(account->pw_dir,"/Users/",7) || ![name isEqual:@(account->pw_name)])return failure(@"denied",@"登录未通过");
+    BOOL configured=NO;for(NSDictionary *r in routes())if([r[@"uid"] isEqual:@(target)] && [r[@"username"] isEqual:name])configured=YES;
+    if(!configured)return failure(@"denied",@"登录未通过");
+    [AuthenticationLock lock];uint64_t now=uptimeMS();NSDictionary *limit=AuthenticationFailures[@(target)];
+    if(limit && now-[limit[@"at"] unsignedLongLongValue]<60000 && [limit[@"count"] intValue]>=5){[AuthenticationLock unlock];return failure(@"denied",@"登录未通过");}
+    ODNode *node=[ODNode nodeWithSession:ODSession.defaultSession name:@"/Local/Default" error:NULL];
+    ODRecord *record=[node recordWithRecordType:kODRecordTypeUsers name:name attributes:@[kODAttributeTypeUniqueID] error:NULL];
+    NSArray *ids=[record valuesForAttribute:kODAttributeTypeUniqueID error:NULL];
+    BOOL valid=ids.count==1 && [ids.firstObject isEqual:[@(target) stringValue]] &&
+        [record authenticationAllowedAndReturnError:NULL] && [record verifyPassword:password error:NULL];
+    if(valid)[AuthenticationFailures removeObjectForKey:@(target)];
+    else AuthenticationFailures[@(target)]=@{@"at":limit && now-[limit[@"at"] unsignedLongLongValue]<60000 ? limit[@"at"] : @(now),
+        @"count":@(limit && now-[limit[@"at"] unsignedLongLongValue]<60000 ? [limit[@"count"] intValue]+1 : 1)};
+    [AuthenticationLock unlock];
+    if(!valid)return failure(@"denied",@"登录未通过");
+    [AuthenticationLock lock];[LoginMessages removeObjectForKey:@(target)];[AuthenticationLock unlock];
+    NSDictionary *desktopRoute=@{@"uid":@(target),@"home":@(account->pw_dir)};
+    NSDictionary *priorState=agentState(desktopRoute);
+    NSDictionary *nativeLease=jsonFile([@ZR_COMMAND_DIR stringByAppendingPathComponent:[NSString stringWithFormat:@"native-%u.lease",target]],0,NO);
+    BOOL nativeDesktop=nativeLease && [nativeLease[@"uid"] isEqual:@(target)] &&
+        [nativeLease[@"boot_id"] isEqual:priorState[@"boot_id"]] &&
+        [nativeLease[@"audit_session_id"] isEqual:priorState[@"audit_session_id"]];
+    uint64_t signal=[priorState[@"last_capture_ms"] unsignedLongLongValue],nowCapture=uptimeMS();
+    BOOL needsDesktop=![job([NSString stringWithFormat:@"gui/%u",target])[@"loaded"] boolValue] ||
+        !priorState || ![priorState[@"capturing"] boolValue] || [priorState[@"capture_paused"] boolValue] ||
+        !signal || signal>nowCapture || nowCapture-signal>3000 ||
+        nativeDesktop;
+    if(needsDesktop) {
+        if(![DesktopOpeningLock lockBeforeDate:[NSDate dateWithTimeIntervalSinceNow:5]])return failure(@"desktop_busy",@"正在启动其他用户桌面，请稍后重新连接");
+        NSDictionary *opened;
+        @try {
+            opened=setupTask(@"open-desktop",@{@"uid":@(target),@"username":name,@"password":password});
+        } @finally {[DesktopOpeningLock unlock];}
+        if(![opened[@"ok"] boolValue]) {
+            NSString *message=[opened[@"error"] isEqual:@"desktop_capacity"] ? opened[@"message"] : @"请开启系统屏幕共享并允许此用户，或完成该用户的首次系统设置和授权";
+            [AuthenticationLock lock];LoginMessages[@(target)]=message;[AuthenticationLock unlock];
+            return failure(@"desktop_setup_required",message);
+        }
+        NSDictionary *state=agentState(desktopRoute);
+        uint64_t captured=[state[@"last_capture_ms"] unsignedLongLongValue],now=uptimeMS();
+        if(!state || ![state[@"login_complete"] boolValue] || ![state[@"screen_capture"] boolValue] || ![state[@"accessibility"] boolValue] || !captured || captured>now || now-captured>3000)return failure(@"desktop_setup_required",@"桌面或系统授权尚未就绪");
+    }
+    return @{@"ok":@YES,@"uid":@(target)};
+}
+static NSDictionary *handle(uid_t peer,pid_t peerPID,NSDictionary *request) {
     NSString *action=request[@"action"];
     BOOL configuring=[action isEqual:@"configure"];
-    NSSet *keys=[NSSet setWithArray:configuring ? @[@"action",@"broker_uid",@"desktop_uids",@"authorization"] : @[@"action",@"uid",@"authorization"]];
+    BOOL network=[action isEqual:@"configure-local"] || [action isEqual:@"configure-network"];
+    BOOL authentication=[action isEqual:@"authenticate-rdp"];
+    NSSet *keys=[NSSet setWithArray:configuring ? @[@"action",@"broker_uid",@"desktop_uids",@"authorization"] : network ? @[@"action",@"enabled",@"port",@"authorization"] : authentication ? @[@"action",@"uid",@"username",@"password"] : @[@"action",@"uid",@"authorization"]];
     if(!request || request.count>keys.count)return failure(@"invalid_request",@"请求格式无效");
     for(id key in request)if(![keys containsObject:key])return failure(@"invalid_request",@"请求包含不支持的字段");
-    NSSet *actions=[NSSet setWithArray:@[@"status",@"setup-info",@"configure",@"connection-info",@"prepare-upgrade",@"start-server",@"stop-server",@"restart-server",@"start-agent",@"stop-agent",@"restart-agent",@"disconnect-rdp"]];
+    NSSet *actions=[NSSet setWithArray:@[@"status",@"setup-info",@"configure",@"configure-local",@"configure-network",@"authenticate-rdp",@"connection-info",@"prepare-upgrade",@"start-server",@"stop-server",@"restart-server",@"start-agent",@"stop-agent",@"restart-agent",@"disconnect-rdp"]];
     if(![action isKindOfClass:NSString.class] || ![actions containsObject:action])return failure(@"invalid_action",@"不支持的操作");
+    if(authentication)return authenticateRDP(peer,peerPID,request);
+    if(network) {
+        if(!authorized(peer,request))return failure(@"authorization_required",@"启动服务及修改连接设置需要管理员验证");
+        id port=request[@"port"],enabled=request[@"enabled"];
+        if(![port isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)port)==CFBooleanGetTypeID() ||
+            [port doubleValue]!=[port intValue] || [port intValue]<1024 || [port intValue]>65535 || [port intValue]==3390 ||
+            ![enabled isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)enabled)!=CFBooleanGetTypeID())return failure(@"invalid_request",@"连接端口必须为 1024–65535，且不能使用保留端口 3390");
+        [ActionLock lock];NSDictionary *reply=Installing ? failure(@"installing",@"软件正在安装") : setupTask(action,@{@"enabled":enabled,@"port":port});[ActionLock unlock];return reply;
+    }
     if([action isEqual:@"prepare-upgrade"]) {
         if(peer!=0 || request[@"uid"])return failure(@"authorization_required",@"此操作仅供系统安装器使用");
         [ActionLock lock];Installing=YES;[ActionLock unlock];return @{@"ok":@YES};
@@ -285,9 +378,16 @@ static int controlDaemon(void) {
     if(geteuid()!=0)return 2;
     int *fds=NULL;size_t count=0;
     if(launch_activate_socket("Control",&fds,&count)!=0 || count!=1){free(fds);return 1;}
-    int listener=fds[0];free(fds);fcntl(listener,F_SETFD,FD_CLOEXEC);ActionLock=[NSLock new];
+    int listener=fds[0];free(fds);fcntl(listener,F_SETFD,FD_CLOEXEC);ActionLock=[NSLock new];AuthenticationLock=NSLock.new;DesktopOpeningLock=NSLock.new;AuthenticationFailures=NSMutableDictionary.new;LoginMessages=NSMutableDictionary.new;
     NSOperationQueue *queue=[NSOperationQueue new];queue.maxConcurrentOperationCount=4;
     dispatch_semaphore_t slots=dispatch_semaphore_create(12);
+    dispatch_source_t sync=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_global_queue(QOS_CLASS_UTILITY,0));
+    dispatch_source_set_timer(sync,dispatch_time(DISPATCH_TIME_NOW,30*NSEC_PER_SEC),30*NSEC_PER_SEC,NSEC_PER_SEC);
+    dispatch_source_set_event_handler(sync,^{@autoreleasepool {
+        if(![ActionLock tryLock])return;
+        if(!Installing && [jsonFile(Config,0,YES)[@"local_auth"] boolValue] && [job(@"system/org.zmacrds.server")[@"loaded"] boolValue])setupTask(@"sync-local-users",@{});
+        [ActionLock unlock];
+    }});dispatch_resume(sync);
     while(YES) {
         int fd=accept(listener,NULL,NULL);if(fd>=0)fcntl(fd,F_SETFD,FD_CLOEXEC);if(fd<0){if(errno==EINTR)continue;return 1;}
         if(dispatch_semaphore_wait(slots,DISPATCH_TIME_NOW)!=0){close(fd);continue;}
@@ -297,7 +397,8 @@ static int controlDaemon(void) {
             uid_t uid;gid_t gid;NSDictionary *reply=failure(@"invalid_request",@"请求格式无效");
             if(getpeereid(fd,&uid,&gid)==0) {
                 NSData *data=zrReadMessage(fd,8192,3000);id object=data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
-                if([object isKindOfClass:NSDictionary.class])reply=handle(uid,object);
+                pid_t peerPID=0;socklen_t size=sizeof(peerPID);getsockopt(fd,SOL_LOCAL,LOCAL_PEERPID,&peerPID,&size);
+                if([object isKindOfClass:NSDictionary.class])reply=handle(uid,peerPID,object);
             }
             zrWriteMessage(fd,reply);close(fd);dispatch_semaphore_signal(slots);
         }}];

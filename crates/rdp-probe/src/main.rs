@@ -6,6 +6,8 @@ mod audio;
 mod bridge;
 mod codecs;
 mod multi;
+mod local_auth;
+mod native_desktop;
 mod relay;
 use anyhow::{Context, Result, ensure};
 use ironrdp_server::{
@@ -379,6 +381,10 @@ fn draw(s: &Pattern) -> Vec<u8> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args_os().collect();
+    if args.len()==8 && args[1]=="--native-desktop-holder" {
+        return native_desktop::run(args[2].to_str().context("descriptor")?.parse()?,args[3].to_str().context("UID")?.parse()?,
+            args[4].to_str().context("ready descriptor")?.parse()?,args[5].to_str().context("width")?.parse()?,args[6].to_str().context("height")?.parse()?,args[7].to_str().context("generation label")?).await;
+    }
     if args.len() == 3 && args[1] == "--multi" {
         let runtime = multi::bootstrap(Path::new(&args[2]))?;
         return runtime.run().await;

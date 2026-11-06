@@ -105,9 +105,14 @@ def install_user(account):
     if status:
         raise RuntimeError('could not install user LaunchAgent')
     unload(f'gui/{account.pw_uid}/{LABEL}')
-    result = subprocess.run(['launchctl', 'bootstrap', f'gui/{account.pw_uid}',
-                             str(pathlib.Path(account.pw_dir) / 'Library/LaunchAgents' / (LABEL + '.plist'))],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for attempt in range(5):
+        result = subprocess.run(['launchctl', 'bootstrap', f'gui/{account.pw_uid}',
+                                 str(pathlib.Path(account.pw_dir) / 'Library/LaunchAgents' / (LABEL + '.plist'))],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if result.returncode == 0:
+            break
+        if attempt < 4:
+            time.sleep(.2)
     print(f'GUI service UID {account.pw_uid}: ' + ('started' if result.returncode == 0 else 'starts on next graphical login'))
 
 def install(args):
@@ -115,8 +120,13 @@ def install(args):
         raise ValueError('run installer with sudo')
     cfg = private_json(args.config)
     broker = pwd.getpwuid(cfg['broker_uid'])
-    if broker.pw_uid < 501 or not 1 <= len(cfg['users']) <= 8:
-        raise ValueError('ordinary broker and 1..8 desktop accounts required')
+    if broker.pw_uid < 501 or not 1 <= len(cfg['users']) <= 128:
+        raise ValueError('broker and 1..128 desktop accounts required')
+    port=cfg.get('lan_port')
+    if port is not None and (type(port) is not int or not 1024 <= port <= 65535 or port == cfg.get('port',3390)):
+        raise ValueError('invalid LAN port')
+    if 'local_auth' in cfg and type(cfg['local_auth']) is not bool:
+        raise ValueError('invalid authentication mode')
     accounts = []
     for route in cfg['users']:
         account = pwd.getpwuid(route['uid'])
@@ -176,6 +186,10 @@ def install(args):
     else:
         raise RuntimeError('desktop agent did not exit normally; update stopped')
     logs = pathlib.Path('/Library/Logs/ZMacRDS')
+    if logs.stat().st_uid != broker.pw_uid:
+        # Preserve old logs without following/chowning user-controlled leaves.
+        logs.rename(BASE / ('previous-logs-' + str(time.time_ns())))
+        logs.mkdir(mode=0o700)
     os.chown(logs, broker.pw_uid, broker.pw_gid); logs.chmod(0o700)
     stage = pathlib.Path(tempfile.mkdtemp(prefix='.app-', dir='/Applications'))
     shutil.copytree(args.app, stage / 'ZMacRDS Desktop.app', symlinks=True)

@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import pwd
+import re
 import shutil
 import subprocess
 
@@ -21,6 +22,8 @@ def main():
                                              stdout=subprocess.DEVNULL).returncode == 0:
         raise ValueError('configuration is still running')
     unload('system/org.zmacrds.server')
+    for path in pathlib.Path('/var/run/zmacrds-control').glob('native-*.lease'):
+        if re.fullmatch(r'native-[0-9]+\.lease',path.name):path.unlink()
     # Enumerate ordinary accounts, not paths supplied by a request or config.
     for account in pwd.getpwall():
         if account.pw_uid < 501 or not account.pw_dir.startswith('/Users/'): continue

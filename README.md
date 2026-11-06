@@ -1,5 +1,11 @@
 # ZMacRDS
 
+**0.3.1 内部测试版（Apple Silicon / macOS 14.2+）**新增局域网 RDP 直连与 Mac 本地密码验证。安装后打开 ZMacRDS Manager，点击“启动服务”，自动识别已有本地用户；客户端输入服务器 IP、短用户名和 Mac 登录密码，不需要逐台建立 SSH 隧道。默认端口3389，界面可查看用户登录、权限和连接状态，可修改连接端口或导出不含密码的 RDP 文件。
+
+首次使用仍须按 macOS 要求完成各账号的系统设置、录屏和辅助功能授权。开启系统屏幕共享并允许账号后，RDP 可通过苹果原生认证按需建立已初始化用户的独立桌面，不保存密码。Windows 操作系统客户端和更大容量仍未实测。见[新版使用说明](docs/QUICK_START.html)与[直连及本地账号验收](docs/reports/LAN_LOCAL_ACCOUNTS_2026-11-06.md)。
+
+以下为0.3.0及此前的实现与测试历史；旧的回环入口和独立口令描述不代表0.3.1点击“启动服务”后的本地账号模式。
+
 可安装交付版本为 **0.3.0（内部测试版，Apple Silicon / macOS14.2+）**。运行 `make release SIGN_IDENTITY=稳定签名身份 VNC_RUNTIME=/absolute/python-runtime` 构建自带运行环境的安装包及交付 ZIP；用户安装和首次配置见[使用说明](docs/QUICK_START.html)，版本验收见[0.3.0交付记录](docs/reports/RELEASE_0_3_0_2026-11-06.md)。
 
 让 macOS 和 Windows 上的远程桌面客户端连接同一台 Mac Server，不同用户可同时操作各自独立的 macOS 图形桌面。支持目标包括全 Windows、全 Mac 和 Mac / Windows 混合连接，32 个并发用户是总容量目标。
