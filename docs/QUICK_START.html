@@ -1,0 +1,23 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>ZMacRDS 使用说明</title>
+<style>body{font:16px -apple-system,BlinkMacSystemFont,sans-serif;line-height:1.7;max-width:850px;margin:40px auto;padding:0 28px;color:#172033}h1,h2{line-height:1.3}h2{margin-top:32px}code,pre{font:13px ui-monospace,monospace;background:#f1f4f8}pre{padding:18px;overflow:auto;border-radius:10px}.note{padding:16px 20px;background:#edf4ff;border-radius:12px}li{margin:8px 0}table{border-collapse:collapse;width:100%}td,th{padding:10px;border-bottom:1px solid #ddd;text-align:left}</style>
+<h1>ZMacRDS 0.3.0</h1><p>Mac 多用户远程桌面 · 内部测试版</p>
+<div class="note">服务器安装在 Apple Silicon Mac，系统要求 macOS 14.2 或更新。当前完成了 VM03 上两个远程账号与一个控制台账号的隔离测试；Windows 实机、更多用户容量和本版本长时稳定性仍待验收。</div>
+<h2>安装</h2><ol><li>把 <b>ZMacRDS-0.3.0-arm64.pkg</b> 放到作为服务器的 Mac 上，双击安装，使用这台 Mac 的管理员完成系统安装验证。安装包自带运行环境。</li>
+<li>打开“应用程序”中的 <b>ZMacRDS Manager</b>，点击“配置用户…”。选择一个服务运行账号，再勾选不同的远程桌面账号。使用已有的本地账号；可先在系统设置创建新账号。</li>
+<li>保存配置。软件为新增用户生成独立 RDP 口令；已有连接口令、证书和桌面应用会保留。升级安装会关闭管理窗口并断开 RDP，安装后重新打开即可。</li>
+<li>每个新增账号在这台 Mac 上登录一次，完成 macOS 首次设置。按系统提示，为 <b>ZMacRDS Desktop</b> 开启“屏幕与系统音频录制”和“辅助功能”权限。管理窗口会显示该账号是否已就绪。</li></ol>
+<p>本安装包用于内部交付，应用使用稳定开发签名；安装包尚未进行 Developer ID 公证。请通过交付的 SHA-256 文件核对包内容。首次隐私授权仍由 macOS 的系统界面处理。</p>
+<h2>连接</h2><p>在管理窗口选中账号，点击“连接信息…”，查看用户名、RDP 独立口令和服务器证书指纹。查看其他账号的信息需要管理员验证。</p>
+<table><tr><th>客户端</th><th>入口</th><th>凭据</th></tr><tr><td>Windows App / 兼容 RDP 客户端</td><td>127.0.0.1:3390</td><td>管理窗口中的用户名与 RDP 口令</td></tr><tr><td>苹果屏幕共享 / 兼容 Apple 账号认证的 VNC 客户端</td><td>127.0.0.1:5903（转发至服务器5900）</td><td>对应 Mac 本地账号与 Mac 登录密码</td></tr></table>
+<p>VM03 已有常驻安全隧道，可继续使用以上本机入口。新的服务器通过核对主机身份的 SSH 隧道连接；在服务器系统设置“通用 → 共享”中配置远程登录。首次 SSH 连接核对服务器主机指纹。</p>
+<pre>ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
+  -L 127.0.0.1:3390:127.0.0.1:3390 \
+  -L 127.0.0.1:5903:127.0.0.1:5900 YOUR_SSH_ACCOUNT@YOUR_MAC</pre>
+<p>把上述占位账号与地址替换为服务器信息。在 Mac 终端可直接使用；Windows PowerShell 使用时将这三行写在一行。隧道保持运行期间连接本机入口。服务器证书提示中的指纹应与管理窗口一致。独立的隧道可由管理员按服务说明设置常驻。</p>
+<p>使用 VNC 时，在服务器系统设置“通用 → 共享”启用“屏幕共享”，并允许对应账号。苹果屏幕共享可连接 <code>vnc://127.0.0.1:5903</code>，选择自己的独立桌面；保持一个需要使用的窗口。Windows VNC 客户端需支持 Apple 用户名/密码认证，当前尚未完成 Windows 实机验收。</p>
+<p>RDP 使用交付的 <b>ZMacRDS-fixed.rdp</b>，固定远端 1920×1200，开启客户端本地缩放。Windows App 中关闭“调整窗口时更新会话分辨率”。声音选择“在此电脑播放”；不同用户使用独立音频队列。</p>
+<h2>日常使用</h2><ul><li>服务在后台持续运行，不再显示彩色测试窗口。用户菜单栏的 ZMacRDS 可查看状态和打开管理窗口。</li><li>同账号的新 RDP 连接接管旧连接，原有桌面应用保留；不同账号并发进入不同桌面。</li><li>“断开 RDP”保留桌面与文档。停止或重启代理后，该账号需要重新连接；停止或重启服务影响全部 RDP 连接。</li><li>“采集暂停”会禁用输入并等待正常恢复。系统休眠、真正锁屏、注销及权限撤销仍服从 macOS；新账号需要先建立已登录的图形桌面。</li><li>当前配置页支持最多8个已有本地账号，已有配置保留，可增加账号。更多用户容量需要另行验证。</li></ul>
+<h2>卸载与重新安装</h2><p>运行交付包中的“卸载 ZMacRDS.command”，确认后使用管理员验证。它停止本软件服务并移除应用，保留本地账号、文档、连接口令、证书及已有隧道；重新安装可沿用这些设置。私人设置与运行环境保留在服务器的应用支持目录中。</p>
+<h2>本版本范围</h2><p>这是可安装运行的内部版本。默认 RDP 编码策略优先兼容性，原始位图回退的带宽成本较高；NSCodec 需显式启用试验。已测本机固定分辨率的双账号输入、静止桌面、四秒停顿恢复、声音隔离与窗口缩放。新构建没有重跑一小时长测，也没有完成 Windows 实机、动态远端分辨率、无人登录时创建新桌面、公开网络或大规模容量验收。</p>
+<p>完整测试记录、第三方许可证与源码资料随交付包提供。</p>
+</html>

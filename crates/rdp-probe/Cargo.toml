@@ -1,0 +1,23 @@
+[package]
+name = "zmacrds-rdp-probe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+ironrdp-server = { version = "=0.13.0", default-features = false, features = ["helper", "nscodec"] }
+ironrdp-pdu = "=0.9.0"
+ironrdp-rdpsnd = "=0.9.0"
+libc = "0.2"
+rustls-pemfile = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "time", "signal", "net", "io-util", "sync"] }
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

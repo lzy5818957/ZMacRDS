@@ -1,0 +1,33 @@
+#!/bin/sh
+# Launch the signed bundle through LaunchServices in this logged-in GUI user.
+set -eu
+if [ "$(id -u)" -eq 0 ]; then
+    echo 'Run as the logged-in desktop user, not root.' >&2
+    exit 2
+fi
+if [ "${1:-}" = --service ]; then
+    [ "$#" -le 2 ] || { echo 'Usage: start-desktop --service [APP]' >&2; exit 2; }
+    app=${2:-/Applications/ZMacRDS Desktop.app}
+    [ -d "$app/Contents/MacOS" ] || exit 1
+    /bin/launchctl print "gui/$(id -u)" >/dev/null
+    # LaunchServices preserves the signed application's privacy responsibility.
+    # open -W remains the launchd job; the GUI app exits if this guardian dies.
+    exec /usr/bin/open -g -W -n "$app" --args service desktop 0 --rdp-bridge --service --audio --guardian "$$"
+fi
+run=${1:-desktop-$(date +%Y%m%d-%H%M%S)}
+seconds=${2:-3600}
+app=${3:-/Applications/ZMacRDS Desktop.app}
+case "$run" in ''|*[!A-Za-z0-9_-]*) echo 'Invalid run identifier.' >&2; exit 2;; esac
+if [ "${#run}" -gt 48 ]; then echo 'Run identifier is too long.' >&2; exit 2; fi
+case "$seconds" in ''|*[!0-9]*) echo 'Invalid duration.' >&2; exit 2;; esac
+if [ "$seconds" -lt 30 ] || [ "$seconds" -gt 3600 ]; then
+    echo 'Duration must be 30..3600 seconds.' >&2
+    exit 2
+fi
+/bin/launchctl print "gui/$(id -u)" >/dev/null
+if [ ! -d "$app/Contents/MacOS" ]; then
+    echo 'Signed desktop application bundle not found.' >&2
+    exit 2
+fi
+# Direct SSH execution can inherit a different ScreenCapture responsibility.
+exec /usr/bin/open -n "$app" --args "$run" desktop "$seconds" --rdp-bridge

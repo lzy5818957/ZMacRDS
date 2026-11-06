@@ -1,0 +1,38 @@
+#!/bin/sh
+# Install a test kit with fresh inodes; never overwrite a signed executable
+# in place. Existing runs and the previous app bundle are retained.
+set -eu
+umask 022
+[ "$#" -eq 1 ] || { echo 'Usage: sudo ./install-m1 /Users/Shared/ZMacRDS-M1' >&2; exit 2; }
+[ "$(id -u)" -eq 0 ] || { echo 'Install with sudo in the test VM.' >&2; exit 1; }
+if pgrep -x 'M1Agent|M1Editor' >/dev/null; then
+    echo 'Stop M1Agent and M1Editor in every test account before updating the application.' >&2
+    exit 1
+fi
+source_dir=$(CDPATH= cd -P "$(dirname "$0")" && pwd)
+target=$1
+case "$target" in /*) ;; *) echo 'Use an absolute installation path.' >&2; exit 2 ;; esac
+[ ! -L "$target" ] || { echo 'Destination must not be a symlink.' >&2; exit 1; }
+mkdir -p "$target"
+target=$(CDPATH= cd -P "$target" && pwd)
+stage=$(mktemp -d "$target/.m1-install.XXXXXX")
+ditto "$source_dir/ZMacRDS-M1.app" "$stage/ZMacRDS-M1.app"
+codesign --verify --deep --strict "$stage/ZMacRDS-M1.app"
+ditto "$source_dir/ZMacRDS-M1-Editor.app" "$stage/ZMacRDS-M1-Editor.app"
+codesign --verify --deep --strict "$stage/ZMacRDS-M1-Editor.app"
+if [ -e "$target/ZMacRDS-M1.app" ]; then
+    mv "$target/ZMacRDS-M1.app" "$stage/previous-bundle"
+fi
+mv "$stage/ZMacRDS-M1.app" "$target/ZMacRDS-M1.app"
+if [ -e "$target/ZMacRDS-M1-Editor.app" ]; then
+    mv "$target/ZMacRDS-M1-Editor.app" "$stage/previous-editor"
+fi
+mv "$stage/ZMacRDS-M1-Editor.app" "$target/ZMacRDS-M1-Editor.app"
+if [ "$source_dir" != "$target" ]; then
+    install -m 755 "$source_dir/m1" "$target/m1"
+    install -m 755 "$source_dir/display-probe" "$target/display-probe"
+    install -m 644 "$source_dir/M1_TEST.md" "$target/M1_TEST.md"
+fi
+echo "Installed: $target/ZMacRDS-M1.app"
+echo "Previous bundle (if any): $stage/previous-bundle"
+echo 'If the binary changed, remove its old privacy entries and add the current app in System Settings.'

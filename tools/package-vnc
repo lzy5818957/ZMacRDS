@@ -1,0 +1,29 @@
+#!/bin/sh
+# Bundle explicit inputs only. Runtime must come from a verified official build.
+set -eu
+if [ "$#" -ne 1 ]; then
+    echo 'usage: tools/package-vnc /absolute/path/to/python-runtime' >&2
+    exit 2
+fi
+runtime=$1
+case "$runtime" in /*) ;; *) echo 'absolute runtime path required' >&2; exit 2;; esac
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+"$runtime/bin/python3" -c 'import asyncvnc, asyncvnc2, async_timeout, cryptography, numpy'
+stage=$(mktemp -d "$root/build/vnc-kit.XXXXXX")
+trap 'rm -rf "$stage"' EXIT HUP INT TERM
+mkdir "$stage/app" "$stage/config" "$stage/docs"
+cp "$root/tools/vnc_gateway.py" "$root/tools/vnc_check.py" "$root/tools/vnc-input-check.py" "$root/tools/vnc-takeover-check.py" "$root/tools/vnc-slow-check.py" "$root/tools/vnc-workload-check.py" "$root/tools/vnc-workload-verify.py" "$root/tools/vnc-test-requirements.txt" "$stage/app/"
+cp "$root/config/vnc-gateway.example.json" "$root/config/ZMacRDS-fixed.rdp" "$stage/config/"
+cp "$root/docs/VNC_TEST.md" "$root/docs/VNC_GATEWAY.md" "$root/docs/VNC_THIRD_PARTY.md" "$root/docs/SERVICE.md" "$root/docs/MANAGEMENT.md" "$stage/docs/"
+mkdir "$stage/docs/reports"
+cp "$root/docs/reports/REFACTOR_VM03_2026-11-05.md" "$stage/docs/reports/"
+cp "$root/docs/reports/RDP_CAPTURE_RECOVERY_2026-11-05.md" "$stage/docs/reports/"
+cp "$root/docs/reports/AUDIO_SERVICE_2026-11-05.md" "$stage/docs/reports/"
+cp "$root/docs/reports/BACKGROUND_MANAGER_2026-11-05.md" "$stage/docs/reports/"
+cp "$root/LICENSE" "$stage/"
+# The caller supplies only the Python distribution, never a run/data directory.
+# Preserve its complete layout and bundled dependency licenses.
+mkdir "$stage/python"
+COPYFILE_DISABLE=1 tar -cf - -C "$runtime" . | COPYFILE_DISABLE=1 tar -xf - -C "$stage/python"
+COPYFILE_DISABLE=1 tar -czf "$root/build/ZMacRDS-VNC-$(uname -m).tar.gz.tmp" -C "$stage" .
+mv "$root/build/ZMacRDS-VNC-$(uname -m).tar.gz.tmp" "$root/build/ZMacRDS-VNC-$(uname -m).tar.gz"

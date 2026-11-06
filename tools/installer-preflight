@@ -1,0 +1,53 @@
+#!/bin/sh
+set -eu
+umask 077
+[ "${3:-/}" = / ] || { echo 'ZMacRDS can only be installed on the running system volume.' >&2; exit 1; }
+base='/Library/Application Support/ZMacRDS'
+[ ! -L "$base" ] || exit 1
+mkdir -p "$base"
+[ "$(stat -f %u "$base")" = 0 ] || exit 1
+chmod 700 "$base"
+state="$base/.installer-restore"
+[ ! -L "$state" ] || exit 1
+: > "$state"
+for name in server control; do
+    if launchctl print "system/org.zmacrds.$name" >/dev/null 2>&1; then echo "system:$name" >> "$state"; fi
+done
+if [ -f "$base/installation.json" ] && launchctl print system/org.zmacrds.control >/dev/null 2>&1; then
+    # Wait for an active configuration to complete, then reject new changes
+    # until launchd replaces the controller. No concurrent payload mutation.
+    /usr/local/libexec/zmacrds-control --client prepare-upgrade >/dev/null
+fi
+dscl . -list /Users UniqueID | while read -r name uid; do
+    case "$uid" in ''|*[!0-9]*) continue ;; esac
+    [ "$uid" -ge 501 ] || continue
+    if launchctl print "gui/$uid/org.zmacrds.desktop" >/dev/null 2>&1; then
+        echo "gui:$uid" >> "$state"
+    fi
+done
+launchctl bootout system/org.zmacrds.server >/dev/null 2>&1 || true
+while IFS=: read -r kind value; do
+    if [ "$kind" = gui ]; then launchctl bootout "gui/$value/org.zmacrds.desktop" >/dev/null 2>&1 || true; fi
+done < "$state"
+launchctl bootout system/org.zmacrds.control >/dev/null 2>&1 || true
+/usr/bin/killall ZMacRDSManager >/dev/null 2>&1 || true
+count=0
+while /bin/ps -axo comm= | /usr/bin/grep -F -x '/Applications/ZMacRDS Desktop.app/Contents/MacOS/M1Agent' >/dev/null; do
+    count=$((count+1))
+    if [ "$count" -ge 8 ]; then
+        # Payload has not been touched. Restore the old service definitions.
+        for name in control server; do
+            file="/Library/LaunchDaemons/org.zmacrds.$name.plist"
+            if [ -f "$file" ]; then launchctl bootstrap system "$file" >/dev/null 2>&1 || true; fi
+        done
+        while IFS=: read -r kind value; do
+            if [ "$kind" = gui ] && [ -x /usr/local/libexec/zmacrds-control ]; then
+                /usr/local/libexec/zmacrds-control --client start-agent "$value" >/dev/null 2>&1 || true
+            fi
+        done < "$state"
+        echo 'The desktop service did not stop normally. No application payload was replaced.' >&2
+        exit 1
+    fi
+    sleep 1
+done
+exit 0

@@ -1,0 +1,8 @@
+[workspace]
+members = ["crates/rdp-probe", "crates/rdp-check", "vendor/ironrdp-server", "vendor/ironrdp-nscodec"]
+default-members = ["crates/rdp-probe"]
+resolver = "2"
+
+[patch.crates-io]
+ironrdp-server = { path = "vendor/ironrdp-server" }
+ironrdp-nscodec = { path = "vendor/ironrdp-nscodec" }

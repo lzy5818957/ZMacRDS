@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>org.zmacrds.m1-agent</string>
+<key>CFBundleName</key><string>ZMacRDS M1</string>
+<key>CFBundleDisplayName</key><string>ZMacRDS M1</string>
+<key>CFBundleExecutable</key><string>M1Agent</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>0.1</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSScreenCaptureUsageDescription</key><string>Test whether each logged-in test user's own desktop continues updating independently.</string>
+<key>NSAudioCaptureUsageDescription</key><string>Send only this signed-in user's application audio to their authenticated remote desktop client. No microphone audio is captured.</string>
+</dict></plist>

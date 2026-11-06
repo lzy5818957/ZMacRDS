@@ -1,0 +1,52 @@
+#!/bin/sh
+set -eu
+umask 077
+usage() { echo 'Usage: m1 start RUN window|desktop [30..3600 seconds] | m1 stop|accessibility|input|disconnect|reconnect RUN | m1 editor CASE [seconds] | m1 editor-stop CASE | m1 script RUN JSON_FILE' >&2; exit 2; }
+[ "$#" -ge 2 ] || usage
+action=$1
+run=$2
+case "$run" in ''|*[!a-zA-Z0-9_-]*) usage ;; esac
+[ "${#run}" -le 48 ] || usage
+uid=$(id -u)
+[ "$uid" -ne 0 ] || { echo 'Run in the ordinary test account GUI domain.' >&2; exit 1; }
+dir="$HOME/Library/Application Support/ZMacRDS/M1/$run"
+case "$action" in
+    start)
+        [ "$#" -ge 3 ] && [ "$#" -le 4 ] || usage
+        case "$3" in window|desktop) ;; *) usage ;; esac
+        duration=${4:-300}
+        case "$duration" in ''|*[!0-9]*) usage ;; esac
+        [ "$duration" -ge 30 ] && [ "$duration" -le 3600 ] || usage
+        [ ! -e "$dir" ] || { echo 'Use a new run ID.' >&2; exit 1; }
+        bin_dir=$(CDPATH= cd -P "$(dirname "$0")" && pwd)
+        exec /usr/bin/open -n "$bin_dir/ZMacRDS-M1.app" --args "$run" "$3" "$duration"
+        ;;
+    editor)
+        [ "$#" -le 3 ] || usage
+        bin_dir=$(CDPATH= cd -P "$(dirname "$0")" && pwd)
+        exec /usr/bin/open -n "$bin_dir/ZMacRDS-M1-Editor.app" --args "$run" "${3:-900}"
+        ;;
+    editor-stop)
+        [ "$#" -eq 2 ] || usage
+        dir="$HOME/Library/Application Support/ZMacRDS/Editor/$run"
+        [ -d "$dir" ] && [ "$(stat -f %u "$dir")" = "$uid" ] || usage
+        (set -C; : > "$dir/request-stop")
+        ;;
+    script)
+        [ "$#" -eq 3 ] && [ -d "$dir" ] && [ -f "$3" ] || usage
+        [ "$(stat -f %u "$dir")" = "$uid" ] || usage
+        pending=$(mktemp "$dir/.script.XXXXXX")
+        trap 'rm -f "$pending"' EXIT HUP INT TERM
+        cat "$3" > "$pending"
+        # A hard link publishes the complete file atomically and refuses to
+        # overwrite an outstanding request.
+        ln "$pending" "$dir/request-script.json"
+        ;;
+    stop|accessibility|input|disconnect|reconnect)
+        [ "$#" -eq 2 ] && [ -d "$dir" ] || usage
+        [ "$(stat -f %u "$dir")" = "$uid" ] || usage
+        command=request-$action
+        (set -C; : > "$dir/$command")
+        ;;
+    *) usage ;;
+esac
