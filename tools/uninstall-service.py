@@ -22,6 +22,7 @@ def main():
                                              stdout=subprocess.DEVNULL).returncode == 0:
         raise ValueError('configuration is still running')
     unload('system/org.zmacrds.server')
+    unload('system/org.zmacrds.web')
     for path in pathlib.Path('/var/run/zmacrds-control').glob('native-*.lease'):
         if re.fullmatch(r'native-[0-9]+\.lease',path.name):path.unlink()
     # Enumerate ordinary accounts, not paths supplied by a request or config.
@@ -38,13 +39,15 @@ def main():
         os.waitpid(pid, 0)
     unload('system/org.zmacrds.control')
     subprocess.run(['/usr/bin/killall', 'ZMacRDSManager'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for name in ['server', 'control']:
+    for name in ['server', 'control', 'web']:
         pathlib.Path(f'/Library/LaunchDaemons/org.zmacrds.{name}.plist').unlink(missing_ok=True)
     for name in ['ZMacRDS Desktop.app', 'ZMacRDS Manager.app']:
         path = pathlib.Path('/Applications')/name
         if path.is_symlink(): path.unlink()
         elif path.exists(): shutil.rmtree(path)
-    for name in ['control', 'server', 'start-desktop', 'configure.py', 'install-service.py', 'uninstall.py']:
+    for name in ['control', 'server', 'start-desktop', 'configure.py', 'install-service.py', 'uninstall.py',
+                 'web', 'web-source', 'web-encode', 'web-admin.py',
+                 'managed-apple.py', 'managed-screen.py', 'vnc-gateway.py']:
         pathlib.Path('/usr/local/libexec/zmacrds-'+name).unlink(missing_ok=True)
     subprocess.run(['/usr/sbin/pkgutil', '--forget', 'org.zmacrds.suite'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # Credentials, TLS identity, logs, desktop documents, TCC and the optional

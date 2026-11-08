@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import pathlib
+import subprocess
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -10,7 +11,6 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('setup_backend', pathlib.Path(__file__).resolve().parents[1]/'tools/configure-service.py')
 setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
-
 
 class SetupTests(unittest.TestCase):
     def setUp(self):
@@ -113,12 +113,13 @@ class SetupTests(unittest.TestCase):
         def output(command,**kwargs):
             if command[0]=='/usr/sbin/sysctl':return '2000'
             if command[0]=='/bin/ps':return '1\n2\n'
-            return 'p123\ncFakeServer\nu505\n'
+            raise AssertionError(command)
         with patch.object(setup.subprocess,'check_output',side_effect=output), \
+             patch.object(setup.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout='p123\ncFakeServer\nu505\n')), \
              patch.object(setup.ctypes,'CDLL',return_value=SimpleNamespace(proc_pidpath=Mock())), \
              patch.object(setup.socket,'create_connection') as connection:
-            with self.assertRaisesRegex(ValueError,'native screen sharing is not available'):
-                setup.open_desktop({'uid':505,'username':'user505','password':'private-fixture'})
+            result=setup.open_desktop({'uid':505,'username':'user505','password':'private-fixture'})
+            self.assertFalse(result['ok']);self.assertEqual(result['error'],'native_sharing_unavailable')
             connection.assert_not_called()
 
     def test_session_admission_preserves_process_headroom_before_native_login(self):
@@ -136,6 +137,7 @@ class SetupTests(unittest.TestCase):
                 reply=setup.connection_info(505)
             self.assertEqual(reply['endpoint'],'192.168.1.50:3389')
             self.assertEqual(reply['password'],'');self.assertTrue(reply['local_auth'])
+            self.assertEqual(reply['certificate_pem'], cert.read_text())
             self.assertNotIn('preserve-existing-secret',json.dumps(reply))
 
     def test_bad_existing_configuration_is_never_treated_as_first_install(self):

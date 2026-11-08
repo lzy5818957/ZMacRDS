@@ -186,7 +186,7 @@ async def forward_display(reader, writer, width, height):
 
 
 @asynccontextmanager
-async def pinned_connection(port, username, password, expected_sha256, shared=True, decoder="zlib"):
+async def pinned_connection(port, username, password, expected_sha256, shared=True, decoder="zlib", virtual_init=None):
     """Apple RSA handshake: compare the public key BEFORE sending credentials.
 
     Native Apple servers require the key-request exchange even with a known
@@ -204,9 +204,10 @@ async def pinned_connection(port, username, password, expected_sha256, shared=Tr
     from cryptography.hazmat.primitives.serialization import load_der_public_key
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     try:
-        if await reader.readexactly(12) not in (b"RFB 003.008\n", b"RFB 003.889\n"):
+        version = await reader.readexactly(12)
+        if version not in (b"RFB 003.008\n", b"RFB 003.889\n") or (virtual_init and version != b"RFB 003.889\n"):
             raise ValueError("RFB 3.8 required")
-        writer.write(b"RFB 003.008\n")
+        writer.write(version if virtual_init else b"RFB 003.008\n")
         types = await reader.readexactly(int.from_bytes(await reader.readexactly(1), "big"))
         if 33 not in types:
             raise ValueError("Apple RSA account authentication required")
@@ -235,17 +236,18 @@ async def pinned_connection(port, username, password, expected_sha256, shared=Tr
         await reader.readexactly(4)
         if await reader.readexactly(4) != bytes(4):
             raise PermissionError("account authentication denied")
-        if not shared:
+        if virtual_init:
+            video = await virtual_init(reader, writer, asyncvnc)
+        elif not shared:
             # Video.create emits ClientInit itself. Override that single write.
             class InitWriter:
                 def write(self, data):
                     writer.write(b"\0" if data == b"\1" else data)
                 def __getattr__(self, name):
                     return getattr(writer, name)
-            init_writer = InitWriter()
+            video = await asyncvnc.Video.create(reader, InitWriter())
         else:
-            init_writer = writer
-        video = await asyncvnc.Video.create(reader, init_writer)
+            video = await asyncvnc.Video.create(reader, writer)
         yield asyncvnc.Client(reader=reader, writer=writer, host_key=key,
                               clipboard=asyncvnc.Clipboard(writer), keyboard=asyncvnc.Keyboard(writer),
                               mouse=asyncvnc.Mouse(writer), video=video)

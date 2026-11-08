@@ -32,6 +32,8 @@ FIREWALL = '/usr/libexec/ApplicationFirewall/socketfilterfw'
 def local_accounts():
     accounts = []
     for account in pwd.getpwall():
+        if re.fullmatch(r'zr[a-f0-9]{24}', account.pw_name):
+            continue  # managed web accounts never become ordinary RDP routes
         try:
             uid(account.pw_uid)
         except (KeyError, ValueError):
@@ -99,7 +101,7 @@ def own_listener(port, broker_uid):
     return found
 
 
-def allow_firewall():
+def allow_firewall(executable=SERVER):
     console = os.stat('/dev/console').st_uid
     prefix = ['/bin/launchctl', 'asuser', str(console)] if console >= 501 else []
     state = subprocess.check_output(prefix + [FIREWALL, '--getglobalstate'], timeout=10, text=True)
@@ -110,7 +112,7 @@ def allow_firewall():
     if '(State = 1)' not in state:
         raise ValueError('无法读取系统防火墙状态。')
     for action in ['--add', '--unblockapp']:
-        subprocess.run(prefix + [FIREWALL, action, SERVER], check=True, timeout=30,
+        subprocess.run(prefix + [FIREWALL, action, executable], check=True, timeout=30,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -373,11 +375,11 @@ def open_desktop(request):
         return {'ok':False,'error':'desktop_capacity',
                 'message':'此 Mac 的进程资源不足，暂时不能启动更多用户桌面。请注销不用的桌面后重试。'}
     # Do not send a Mac password to an arbitrary unprivileged service on 5900.
-    listing = subprocess.check_output(['/usr/sbin/lsof', '-nP', '-iTCP:5900', '-sTCP:LISTEN', '-Fpcu'],
-                                      text=True, timeout=3)
+    listing = subprocess.run(['/usr/sbin/lsof', '-nP', '-iTCP:5900', '-sTCP:LISTEN', '-Fpcu'],
+                             capture_output=True, text=True, timeout=3)
     libproc = ctypes.CDLL('/usr/lib/libproc.dylib')
     native = False; pid = None; owner = None
-    for line in (listing + '\np0').splitlines():
+    for line in (listing.stdout + '\np0').splitlines():
         if line.startswith('p'):
             if pid and owner == 0:
                 path = ctypes.create_string_buffer(4096)
@@ -388,7 +390,8 @@ def open_desktop(request):
         elif line.startswith('u'):
             owner = int(line[1:])
     if not native:
-        raise ValueError('native screen sharing is not available')
+        return {'ok': False, 'error': 'native_sharing_unavailable',
+                'message': '此用户的桌面尚未运行。请先在 Mac 上登录该账号，或在系统屏幕共享中单独允许此账号。'}
     # Bounded, root-private progress diagnostics contain no credentials or pixels.
     diagnostic = BASE/f'native-{account.pw_uid}-init.log'
     def stage(label, reset=False):
@@ -531,12 +534,13 @@ def connection_info(account_uid):
     route = next((item for item in config['users'] if item['uid'] == account.pw_uid), None)
     if not route or route['credentials']['username'] != account.pw_name:
         raise ValueError('unknown desktop account')
-    raw = pathlib.Path(config['certificate']).read_text()
-    fingerprint = hashlib.sha256(ssl.PEM_cert_to_DER_cert(raw)).hexdigest().upper()
+    certificate_der = ssl.PEM_cert_to_DER_cert(pathlib.Path(config['certificate']).read_text())
+    fingerprint = hashlib.sha256(certificate_der).hexdigest().upper()
     settings = connection_settings(config)
     return {'ok': True, 'username': account.pw_name, 'password': '' if config.get('local_auth') else route['credentials']['password'],
             'local_auth': bool(config.get('local_auth')), 'endpoints': settings['endpoints'],
             'endpoint': settings['endpoints'][0] if settings['endpoints'] else '127.0.0.1:3390',
+            'certificate_pem': ssl.DER_cert_to_PEM_cert(certificate_der),
             'sha256': ':'.join(fingerprint[i:i+2] for i in range(0, 64, 2))}
 
 

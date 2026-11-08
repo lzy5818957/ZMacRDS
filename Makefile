@@ -1,5 +1,6 @@
 MACOS_MIN = 13.0
 SIGN_IDENTITY ?= -
+INSTALLER_SIGN_IDENTITY ?=
 ARCH := $(shell uname -m)
 KIT = build/ZMacRDS-M0-$(ARCH).tar.gz
 M3_KIT = build/ZMacRDS-M3-$(ARCH).tar.gz
@@ -10,6 +11,18 @@ M3_KIT = build/ZMacRDS-M3-$(ARCH).tar.gz
 release: management build/ZMacRDS-Desktop.app/Contents/MacOS/M1Agent
 	cargo build --release --locked -p zmacrds-rdp-probe -p zmacrds-rdp-check
 	"$(VNC_RUNTIME)/bin/python3.13" tools/build-release.py --runtime "$(VNC_RUNTIME)" --sign-identity "$(SIGN_IDENTITY)"
+
+.PHONY: web-pilot web-pilot-package
+web-pilot:
+	cargo build --release --locked -p zmacrds-rdp-check
+	mkdir -p build/web-desktop
+	/usr/bin/install -m 0755 build/cargo/release/zmacrds-rdp-check build/web-desktop/zmacrds-web-source
+	cd tools/web-desktop/rtc && CGO_ENABLED=0 go build -mod=readonly -trimpath -o ../../../build/web-desktop/zmacrds-web .
+	xcrun clang -mmacosx-version-min=14.2 -Wall -Wextra -Werror -fobjc-arc -O2 -framework Foundation -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework AudioToolbox tools/web-desktop/rtc/native/encode-macos.m -o build/web-desktop/zmacrds-web-encode
+
+web-pilot-package: web-pilot management build/ZMacRDS-Desktop.app/Contents/MacOS/M1Agent
+	cargo build --release --locked -p zmacrds-rdp-probe
+	"$(VNC_RUNTIME)/bin/python3.13" tools/build-release.py --runtime "$(VNC_RUNTIME)" --sign-identity "$(SIGN_IDENTITY)" --installer-sign-identity "$(INSTALLER_SIGN_IDENTITY)" --web-pilot
 
 management: build/zmacrds-control build/ZMacRDS-Manager.app/Contents/MacOS/ZMacRDSManager
 
@@ -110,7 +123,7 @@ build/ZMacRDS-Desktop.app/Contents/MacOS/M1Agent: build/ZMacRDS-M1.app/Contents/
 	plutil -replace CFBundleIdentifier -string org.zmacrds.desktop build/ZMacRDS-Desktop.app/Contents/Info.plist
 	plutil -replace CFBundleName -string "ZMacRDS Desktop" build/ZMacRDS-Desktop.app/Contents/Info.plist
 	plutil -replace CFBundleDisplayName -string "ZMacRDS Desktop" build/ZMacRDS-Desktop.app/Contents/Info.plist
-	plutil -replace CFBundleShortVersionString -string "0.3.1" build/ZMacRDS-Desktop.app/Contents/Info.plist
+	plutil -replace CFBundleShortVersionString -string "0.3.2" build/ZMacRDS-Desktop.app/Contents/Info.plist
 	plutil -replace NSScreenCaptureUsageDescription -string "将当前登录账号自己的桌面发送给已验证的远程连接。" build/ZMacRDS-Desktop.app/Contents/Info.plist
 	codesign --force --sign "$(SIGN_IDENTITY)" --timestamp=none --identifier org.zmacrds.desktop build/ZMacRDS-Desktop.app
 

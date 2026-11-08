@@ -211,6 +211,7 @@ def install(args):
         install_management(controller_data, manager)
     daemon = dict(Label='org.zmacrds.server', ProgramArguments=['/usr/local/libexec/zmacrds-server', '--multi', str(BASE / 'server.json')],
                   RunAtLoad=True, KeepAlive=True, ThrottleInterval=10, ProcessType='Interactive',
+                  SoftResourceLimits={'NumberOfFiles': 4096},
                   EnvironmentVariables={'ZMACRDS_LOG_PATH': str(logs / 'server.log')},
                   StandardOutPath='/dev/null', StandardErrorPath='/dev/null')
     unload('system/org.zmacrds.server')

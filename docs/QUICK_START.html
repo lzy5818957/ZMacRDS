@@ -1,12 +1,12 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>ZMacRDS 使用说明</title>
 <style>body{font:16px -apple-system,BlinkMacSystemFont,sans-serif;line-height:1.7;max-width:850px;margin:40px auto;padding:0 28px;color:#172033}h1,h2{line-height:1.3}h2{margin-top:32px}code,pre{font:13px ui-monospace,monospace;background:#f1f4f8}pre{padding:18px;overflow:auto;border-radius:10px}.note{padding:16px 20px;background:#edf4ff;border-radius:12px}li{margin:8px 0}table{border-collapse:collapse;width:100%}td,th{padding:10px;border-bottom:1px solid #ddd;text-align:left}</style>
-<h1>ZMacRDS 0.3.1</h1><p>Mac 多用户远程桌面 · 局域网直连内部测试版</p>
+<h1>ZMacRDS 0.3.2</h1><p>Mac 多用户远程桌面 · 局域网直连内部测试版</p>
 <div class="note">服务端要求 Apple Silicon Mac、macOS 14.2 或更新。客户端只需 RDP 软件，输入服务器 IP、Mac 本地短用户名和该账号原有的 Mac 登录密码。默认端口 3389，不需要客户端 SSH 隧道。</div>
 <h2>服务器首次使用</h2><ol>
-<li>双击 <b>ZMacRDS-0.3.1-arm64.pkg</b> 完成安装，打开应用程序中的 <b>ZMacRDS Manager</b>。</li>
+<li>双击 <b>ZMacRDS-0.3.2-arm64.pkg</b> 完成安装，打开应用程序中的 <b>ZMacRDS Manager</b>。当前内部包未公证；若系统拦截，在“系统设置 → 隐私与安全”核对文件后点该安装包的“仍要打开”。无需关闭全局安全检查。</li>
 <li>点击 <b>启动服务</b>，完成系统管理员验证。软件自动识别这台 Mac 已有的普通本地用户、建立后台服务，并显示服务器局域网 IP；不需要逐个添加 RDP 账号或另设连接口令。</li>
-<li>各桌面用户需要一次性完成 macOS 首次登录及系统授权：在自己的账号中为 <b>ZMacRDS Desktop</b> 开启“屏幕与系统音频录制”和“辅助功能”。菜单栏 ZMacRDS 可打开系统设置。管理窗口显示登录状态、权限和 RDP 连接状态。</li>
-<li>服务器保持唤醒，各账号使用“切换用户”保留桌面，不要注销。如需重启后由 RDP 自动登录已有用户桌面，在管理窗口点“系统共享设置…”，开启苹果“屏幕共享”并允许这些用户。RDP 会使用刚输入的正确密码，经本机苹果服务建立该用户的独立桌面；不保存密码。未开启时，先正常登录用户桌面即可。</li></ol>
+<li>“首次配置与权限”窗口集中显示服务、本账号的录屏／系统音频和远程键鼠状态。依次点两项设置按钮，在系统设置中开启 <b>ZMacRDS Desktop</b>。键鼠权限在新版 macOS 称为“设备控制和数据访问”，旧版称为“辅助功能”。若录屏授权提示退出，可先选“以后”，完成两项后回到向导点 <b>应用授权并重新检查</b>，统一重新加载本账号代理；已连接的本账号 RDP 会中断，桌面应用保留。无需授予麦克风、摄像头或完全磁盘访问。</li>
+<li>服务器保持唤醒，各账号使用“切换用户”保留桌面。如需让 RDP 为尚未登录的用户启动桌面，在“首次配置与权限”中点“系统屏幕共享设置…”，开启苹果“屏幕共享”并允许这些用户。RDP 会使用刚输入的正确密码，经本机苹果服务建立该用户的独立桌面；不保存密码。未开启时，先正常登录用户桌面即可。</li></ol>
 <p>首次启动自动创建隐藏、禁止密码登录且不能打开终端的专用后台工作身份 <code>_zmacrds</code>，它不作为远程桌面用户。Mac 登录密码由本机 OpenDirectory 验证，不保存在本软件配置或日志中。自动桌面登录只针对已初始化且获系统屏幕共享访问许可的本地账号，不绕过锁屏、首次设置或系统隐私授权；第一次建立桌面可能需要几十秒。</p>
 <p>安装包为内部交付，应用使用开发签名，尚未进行 Developer ID 公证。通过交付的 SHA-256 文件核对内容。</p>
 <h2>Mac 和 Windows 如何连接</h2>
@@ -19,6 +19,7 @@
 <h2>管理服务</h2><ul>
 <li><b>启动服务／停止服务：</b>管理整个 RDP 入口，停止会断开客户端，保留 Mac 用户桌面和应用。</li>
 <li><b>用户列表：</b>显示已登录 Mac 的用户、尚未登录桌面的账号、录屏／键鼠授权及当前 RDP 连接。普通用户默认只看自己；本地管理员或完成管理员验证后可查看全部。</li>
+<li><b>首次配置与权限…：</b>可随时重新打开集中检查窗口；权限由各个 Mac 账号分别授予，管理员不能代替其他用户全局授权。状态以代理实际预检和采集结果为准，系统设置中的开关已开启但未重载时不会提前显示就绪。</li>
 <li><b>连接设置…：</b>允许或关闭局域网直连、修改端口。非默认端口需使用 <code>IP:端口</code>。端口占用时拒绝保存，保留原有服务。</li>
 <li><b>连接信息…：</b>查看地址、用户名、证书指纹，复制说明或导出不含密码的 RDP 文件。不会显示 Mac 登录密码。</li>
 <li><b>新增本地用户：</b>在 macOS 系统设置创建账号即可；服务运行时每30秒检查账号变化，自动安装该用户的代理。账号变化会重新装载 RDP 服务，现有客户端可能需要重连；首次桌面初始化与系统授权仍必须完成。</li>

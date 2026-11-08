@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZMacRDS 音视频测试</title>
+<style>
+  body { margin:24px auto; padding:0 16px; max-width:960px; background:#151820; color:white; font:16px system-ui; }
+  video { display:block; width:100%; aspect-ratio:16/9; background:black; margin:16px 0; }
+  button, select { font:inherit; padding:6px 10px; }
+  pre { white-space:pre-wrap; font:inherit; font-variant-numeric:tabular-nums; }
+</style>
+<h1>网页桌面音视频测试</h1>
+<p>浏览器内生成 720p、30 帧动态图和测试音。发送、接收都在本机，不连接 03。每轮 12 秒，扬声器保持静音。</p>
+<label>发送码率上限 <select id="bitrate"><option value="5000000">5 Mbps</option><option value="2500000">2.5 Mbps</option><option value="600000">600 kbps</option></select></label>
+<label>拥塞时优先 <select id="priority"><option value="maintain-framerate">保帧率</option><option value="maintain-resolution">保分辨率</option></select></label>
+<button id="start" type="button">开始测试</button>
+<button id="stop" type="button" disabled>停止</button>
+<video id="video" autoplay muted playsinline aria-label="接收端视频"></video>
+<pre id="result" role="status">等待测试</pre>
+<script type="module" src="/media-lab.js"></script>
+</html>

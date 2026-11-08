@@ -10,7 +10,7 @@ chmod 700 "$base"
 state="$base/.installer-restore"
 [ ! -L "$state" ] || exit 1
 : > "$state"
-for name in server control; do
+for name in server control web; do
     if launchctl print "system/org.zmacrds.$name" >/dev/null 2>&1; then echo "system:$name" >> "$state"; fi
 done
 if [ -f "$base/installation.json" ] && launchctl print system/org.zmacrds.control >/dev/null 2>&1; then
@@ -26,6 +26,7 @@ dscl . -list /Users UniqueID | while read -r name uid; do
     fi
 done
 launchctl bootout system/org.zmacrds.server >/dev/null 2>&1 || true
+launchctl bootout system/org.zmacrds.web >/dev/null 2>&1 || true
 while IFS=: read -r kind value; do
     if [ "$kind" = gui ]; then launchctl bootout "gui/$value/org.zmacrds.desktop" >/dev/null 2>&1 || true; fi
 done < "$state"
@@ -36,7 +37,7 @@ while /bin/ps -axo comm= | /usr/bin/grep -F -x '/Applications/ZMacRDS Desktop.ap
     count=$((count+1))
     if [ "$count" -ge 8 ]; then
         # Payload has not been touched. Restore the old service definitions.
-        for name in control server; do
+        for name in control server web; do
             file="/Library/LaunchDaemons/org.zmacrds.$name.plist"
             if [ -f "$file" ]; then launchctl bootstrap system "$file" >/dev/null 2>&1 || true; fi
         done

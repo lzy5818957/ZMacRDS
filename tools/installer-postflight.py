@@ -15,6 +15,9 @@ FILES = {
     '/usr/local/libexec/zmacrds-start-desktop', '/usr/local/libexec/zmacrds-configure.py',
     '/usr/local/libexec/zmacrds-install-service.py', '/usr/local/libexec/zmacrds-uninstall.py',
 }
+WEB_FILES = {f'/usr/local/libexec/{name}' for name in
+             ('zmacrds-web', 'zmacrds-web-source', 'zmacrds-web-encode', 'zmacrds-web-admin.py',
+              'zmacrds-managed-apple.py', 'zmacrds-managed-screen.py', 'zmacrds-vnc-gateway.py')}
 
 
 def main():
@@ -22,7 +25,8 @@ def main():
         raise ValueError('root installation required')
     os.umask(0o077); BASE.chmod(0o700)
     manifest = json.loads((BASE/'installation.json').read_text())
-    if set(manifest['files']) != FILES:
+    web = manifest.get('web_pilot') is True
+    if set(manifest['files']) != (FILES | WEB_FILES if web else FILES):
         raise ValueError('unexpected package manifest')
     for name, digest in manifest['files'].items():
         path = pathlib.Path(name)
@@ -30,6 +34,9 @@ def main():
             raise ValueError('package integrity check failed')
     for path in ['/Applications/ZMacRDS Desktop.app', '/Applications/ZMacRDS Manager.app', '/usr/local/libexec/zmacrds-control']:
         subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', path], check=True)
+    if web:
+        for path in sorted(name for name in WEB_FILES if not name.endswith('.py')):
+            subprocess.run(['/usr/bin/codesign', '--verify', '--strict', path], check=True)
     spec = importlib.util.spec_from_file_location('installed_service', '/usr/local/libexec/zmacrds-install-service.py')
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     config = BASE/'server.json'
@@ -49,6 +56,13 @@ def main():
     module.replace(plist, plistlib.dumps(module.control_plist()), 0o644)
     module.unload('system/org.zmacrds.control')
     subprocess.run(['/bin/launchctl', 'bootstrap', 'system', str(plist)], check=True)
+    web_job = pathlib.Path('/Library/LaunchDaemons/org.zmacrds.web.plist')
+    if web and web_job.is_file() and not web_job.is_symlink():
+        module.unload('system/org.zmacrds.web')
+        spec = importlib.util.spec_from_file_location('installed_web_admin', '/usr/local/libexec/zmacrds-web-admin.py')
+        web_admin = importlib.util.module_from_spec(spec); spec.loader.exec_module(web_admin)
+        web_admin.migrate_running_definition(module)
+        subprocess.run(['/bin/launchctl', 'bootstrap', 'system', str(web_job)], check=True)
     (BASE/'.installer-restore').unlink(missing_ok=True)
     print('ZMacRDS installation verified. Open ZMacRDS Manager to configure or manage accounts.')
 

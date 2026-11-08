@@ -1,5 +1,7 @@
 # ZMacRDS
 
+**网页版 0.4.1 源码**包含局域网 HTTPS、WebRTC 桌面和音频、会话重连以及 ZMacRDS Manager 中的服务和权限设置。在 Apple Silicon Mac 上运行 `make web-pilot` 构建网页网关，或提供 Python 运行时后运行 `make web-pilot-package VNC_RUNTIME=/absolute/python-runtime` 在本机构建安装包。
+
 **0.3.1 内部测试版（Apple Silicon / macOS 14.2+）**新增局域网 RDP 直连与 Mac 本地密码验证。安装后打开 ZMacRDS Manager，点击“启动服务”，自动识别已有本地用户；客户端输入服务器 IP、短用户名和 Mac 登录密码，不需要逐台建立 SSH 隧道。默认端口3389，界面可查看用户登录、权限和连接状态，可修改连接端口或导出不含密码的 RDP 文件。
 
 首次使用仍须按 macOS 要求完成各账号的系统设置、录屏和辅助功能授权。开启系统屏幕共享并允许账号后，RDP 可通过苹果原生认证按需建立已初始化用户的独立桌面，不保存密码。Windows 操作系统客户端和更大容量仍未实测。见[新版使用说明](docs/QUICK_START.html)与[直连及本地账号验收](docs/reports/LAN_LOCAL_ACCOUNTS_2026-11-06.md)。

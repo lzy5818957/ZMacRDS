@@ -195,6 +195,9 @@
     // is being tracked; the default run-loop mode pauses during menu use.
     [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
     [NSWorkspace.sharedWorkspace.notificationCenter addObserver:self selector:@selector(sessionBecameActive:) name:NSWorkspaceSessionDidBecomeActiveNotification object:nil];
+    if(self.serviceMode)[NSDistributedNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(permissionRequest:) name:ZR_PERMISSION_NOTIFICATION object:zrPermissionObject()
+        suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{ [self startCapture]; });
 }
 - (void)menuNeedsUpdate:(NSMenu *)menu {
@@ -219,9 +222,33 @@
     }
 }
 - (void)disconnectRdp:(id)sender { (void)sender;[self.bridge closePeer]; }
-- (void)requestScreen:(id)sender { (void)sender;(void)CGRequestScreenCaptureAccess(); }
+- (void)permissionSettings:(NSString *)pane {
+    NSString *prefix=NSProcessInfo.processInfo.operatingSystemVersion.majorVersion>=26 ?
+        @"x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?" :
+        @"x-apple.systempreferences:com.apple.preference.security?";
+    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:[prefix stringByAppendingString:pane]]];
+}
+- (void)requestScreen:(id)sender {
+    (void)sender;if(!CGPreflightScreenCaptureAccess())(void)CGRequestScreenCaptureAccess();
+    [self permissionSettings:@"Privacy_ScreenCapture"];
+}
 - (void)requestInput:(id)sender {
     (void)sender;(void)AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)@{(__bridge NSString *)kAXTrustedCheckOptionPrompt:@YES});
+    [self permissionSettings:@"Privacy_Accessibility"];
+}
+- (void)permissionRequest:(NSNotification *)notification {
+    // Notifications are hints, never authorization. Only show this signed
+    // process's OS prompt in its own existing Aqua session, on explicit action.
+    NSString *action=notification.userInfo[@"action"];
+    if(!self.serviceMode || ![notification.object isEqual:zrPermissionObject()] ||
+       ![action isKindOfClass:NSString.class] ||
+       (![action isEqual:@"screen"] && ![action isEqual:@"input"]))return;
+    dispatch_async(dispatch_get_main_queue(),^{
+        NSDictionary *current=identity();
+        if(self.finishing || ![current[@"gui_uid"] isEqual:self.initialIdentity[@"gui_uid"]] ||
+           ![current[@"audit_session_id"] isEqual:self.initialIdentity[@"audit_session_id"]])return;
+        if([action isEqual:@"screen"])[self requestScreen:nil];else [self requestInput:nil];
+    });
 }
 - (void)openManager:(id)sender {
     (void)sender;
@@ -244,6 +271,10 @@
 }
 - (void)startCapture {
     if(self.captureStarting || self.finishing || !self.connected)return;
+    if(self.serviceMode && !CGPreflightScreenCaptureAccess()) {
+        self.captureError=@"请在管理窗口的首次配置中授权屏幕与系统音频录制";
+        return;
+    }
     self.captureStarting=YES;self.lastRecoveryAt=nowMS();
     void (^ready)(SCShareableContent *, NSError *) = ^(SCShareableContent *content, NSError *error) {
         dispatch_async(dispatch_get_main_queue(),^{
@@ -323,6 +354,18 @@
     self.idleBaseline=nil;
     [self.bridge pauseCapture];self.capturing=NO;self.recoveryAttempts++;self.lastRecoveryAt=nowMS();
     self.awaitingCaptureProof=YES;self.recoveryBuffer=nil;self.firstRecoverySignal=0;
+    // After a lock or virtual display transition the small anchor can retain
+    // an old origin. Reposition only this process's invisible anchor when
+    // AppKit reports exactly one screen in this GUI session. startCapture
+    // must still independently match that owned window to one SCDisplay.
+    NSArray<NSScreen *> *screens=NSScreen.screens;
+    if(self.backgroundMode && screens.count==1) {
+        NSRect bounds=screens.firstObject.frame;
+        if(NSWidth(bounds)>=12 && NSHeight(bounds)>=12) {
+            [self.window setFrameOrigin:NSMakePoint(NSMinX(bounds)+2,NSMinY(bounds)+2)];
+            [self.window orderBack:nil];
+        }
+    }
     SCStream *old=self.stream;self.stream=nil;
     [old stopCaptureWithCompletionHandler:^(NSError *error){(void)error;}];
     [self record:@"capture_recovery" values:@{@"reason":@"no_capture_signal",@"recovery_attempt":@(self.recoveryAttempts)}];
@@ -331,11 +374,12 @@
 - (void)refreshQuietCapture {
     if(!self.bridgeEnabled || !self.capturing || self.captureStarting || self.captureRefreshing ||
        self.finishing || !self.connected || !self.stream || !self.captureConfiguration || !self.captureFilter ||
-       self.awaitingCaptureProof || !self.idleBaseline ||
-       !self.lastCaptureCallback || nowMS()-self.lastCaptureCallback<1000 ||
+       !self.lastCaptureCallback || (self.lastFrame && nowMS()-self.lastFrame<1000) ||
        nowMS()-self.lastCaptureRefresh<2000 || !CGPreflightScreenCaptureAccess() || ![self.bridge sameSession])return;
-    // Quiet off-console displays may stop delivering Idle callbacks. Request
-    // a real frame through the exact same account/display filter. Discard the
+    // An Idle callback can reuse the last Complete sample's timestamp. Such
+    // callbacks do not prove fresh pixels, and their arrival must not prevent
+    // refresh. Also refresh during recovery, when its baseline is cleared.
+    // Request a real frame through the exact same account/display filter. Discard the
     // one-shot result: only subsequent normal stream samples, with their
     // existing timestamp/status checks, may refresh pixels or authorize input.
     if(@available(macOS 14.0,*)) {
@@ -343,11 +387,13 @@
         uint64_t at=nowMS();
         [SCScreenshotManager captureSampleBufferWithFilter:self.captureFilter configuration:self.captureConfiguration
             completionHandler:^(CMSampleBufferRef sample,NSError *error){
-            (void)sample;BOOL success=!error;
+            BOOL success=!error;
+            double age=sample ? CMTimeGetSeconds(CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()),CMSampleBufferGetPresentationTimeStamp(sample)))*1000 : NAN;
             dispatch_async(dispatch_get_main_queue(),^{
                 if(requested==self.stream && !self.finishing) {
                     self.captureRefreshing=NO;
-                    [self record:@"capture_snapshot" values:@{@"request_succeeded":@(success),@"request_ms":@(nowMS()-at),@"stream_proof_required":@YES}];
+                    [self record:@"capture_snapshot" values:@{@"request_succeeded":@(success),@"request_ms":@(nowMS()-at),
+                        @"sample_pts_age_ms":isfinite(age) ? @(age) : NSNull.null,@"stream_proof_required":@YES}];
                 }
             });
         }];
@@ -605,6 +651,12 @@
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         umask(077);
+        if(argc==1) {
+            // Opening the installed Desktop bundle should lead to useful UI,
+            // rather than silently exit because service arguments are absent.
+            [NSApplication sharedApplication];
+            return [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:@"/Applications/ZMacRDS Manager.app"]] ? 0 : 1;
+        }
         if(argc<4)return 2;
         BOOL bridge=NO,service=NO,audio=NO,background=NO;long fps=30;pid_t guardian=0;
         for(int i=4;i<argc;i++) {

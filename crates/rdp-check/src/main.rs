@@ -2,6 +2,7 @@
 //! Validates a locally supplied certificate (including name/expiry), then pins
 //! its exact DER bytes. No system trust changes, no screenshots, no key logging.
 mod audio;
+mod web_source;
 use anyhow::{Context as _, Result, bail, ensure};
 use ironrdp_connector::{ClientConnector, Credentials, DesktopSize};
 use ironrdp_core::decode;
@@ -337,6 +338,25 @@ fn denied_packet(frame: &[u8]) -> bool {
 }
 
 async fn run(config: Config) -> Result<()> {
+    let audio_stats=Arc::new(Mutex::new(audio::Stats::default()));
+    let handler = config.audio_probe.map(|tones| Box::new(audio::Backend::new(audio_stats.clone(),tones)) as Box<dyn ironrdp_rdpsnd::client::RdpsndClientHandler>);
+    let (mut wire, result) = connect_desktop(&config, handler).await?;
+    println!("{}", json!({"event":"tls_verified","uid":config.uid}));
+    let size = (result.desktop_size.width, result.desktop_size.height);
+    ensure!(
+        size.0 > 0 && size.0 <= 4096 && size.1 > 0 && size.1 <= 2160,
+        "unexpected geometry"
+    );
+    let mut image = DecodedImage::new(PixelFormat::BgrA32, size.0, size.1);
+    let mut stage = make_stage(result);
+    run_check(config, &mut wire, size, &mut image, &mut stage, audio_stats).await
+}
+
+type Wire = TokioFramed<tokio_rustls::client::TlsStream<TcpStream>>;
+
+async fn connect_desktop(config: &Config, sound: Option<Box<dyn ironrdp_rdpsnd::client::RdpsndClientHandler>>)
+    -> Result<(Wire, ironrdp_connector::ConnectionResult)>
+{
     let certs = rustls_pemfile::certs(&mut Cursor::new(fs::read(&config.certificate)?))
         .collect::<std::io::Result<Vec<_>>>()?;
     ensure!(
@@ -350,9 +370,10 @@ async fn run(config: Config) -> Result<()> {
         .with_root_certificates(roots)
         .with_no_client_auth();
     let tcp = TcpStream::connect((config.host.as_str(), config.port)).await?;
-    let mut connector = ClientConnector::new(connector_config(&config), tcp.local_addr()?);
-    let audio_stats=Arc::new(Mutex::new(audio::Stats::default()));
-    if let Some(tones)=config.audio_probe {connector.attach_static_channel(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(audio::Backend::new(audio_stats.clone(),tones))));}
+    let mut settings = connector_config(config);
+    settings.enable_audio_playback = sound.is_some();
+    let mut connector = ClientConnector::new(settings, tcp.local_addr()?);
+    if let Some(sound)=sound {connector.attach_static_channel(ironrdp_rdpsnd::client::Rdpsnd::new(sound));}
     let mut wire = TokioFramed::new(tcp);
     let upgrade = connect_begin(&mut wire, &mut connector).await?;
     let (tcp, leftover) = wire.into_inner();
@@ -364,7 +385,6 @@ async fn run(config: Config) -> Result<()> {
         tls.get_ref().1.peer_certificates().and_then(|v| v.first()) == Some(&expected),
         "certificate differs from exact pin"
     );
-    println!("{}", json!({"event":"tls_verified","uid":config.uid}));
     let mut wire = TokioFramed::new(tls);
     let upgraded = mark_as_upgraded(upgrade, &mut connector);
     let result = connect_finalize(
@@ -377,13 +397,11 @@ async fn run(config: Config) -> Result<()> {
         None,
     )
     .await?;
-    let size = (result.desktop_size.width, result.desktop_size.height);
-    ensure!(
-        size.0 > 0 && size.0 <= 4096 && size.1 > 0 && size.1 <= 2160,
-        "unexpected geometry"
-    );
-    let mut image = DecodedImage::new(PixelFormat::BgrA32, size.0, size.1);
-    let mut stage = ActiveStageBuilder {
+    Ok((wire, result))
+}
+
+fn make_stage(result: ironrdp_connector::ConnectionResult) -> ironrdp_session::ActiveStage {
+    ActiveStageBuilder {
         static_channels: result.static_channels,
         user_channel_id: result.user_channel_id,
         io_channel_id: result.io_channel_id,
@@ -393,7 +411,11 @@ async fn run(config: Config) -> Result<()> {
         enable_server_pointer: false,
         pointer_software_rendering: false,
     }
-    .build();
+    .build()
+}
+
+async fn run_check(config: Config, wire: &mut Wire, size: (u16,u16), image: &mut DecodedImage,
+    stage: &mut ironrdp_session::ActiveStage, audio_stats: Arc<Mutex<audio::Stats>>) -> Result<()> {
     let start = Instant::now();
     let scan_ms = if config.motion_probe.is_some() {
         5
@@ -420,7 +442,7 @@ async fn run(config: Config) -> Result<()> {
                     ensure!(audio_stats.lock().unwrap().received==0,"unauthenticated audio received");
                     println!("{}",json!({"event":"check_complete","result":"PASS","access_denied":true,"graphics":0,"audio_packets":0}));return Ok(());
                 }
-                for output in stage.process(&mut image,kind,&frame)? {
+                for output in stage.process(image,kind,&frame)? {
                     match output {
                         ActiveStageOutput::ResponseFrame(bytes)=>{if !bytes.is_empty(){wire.write_all(&bytes).await?;}},
                         ActiveStageOutput::GraphicsUpdate(_)=>{graphics+=1;if config.service_probe {last_fresh=Instant::now();}ensure!(!config.expect_denied,"unauthorized client received graphics");},
@@ -468,7 +490,7 @@ async fn run(config: Config) -> Result<()> {
                     let mouse_action=matches!(config.actions[action].kind,Kind::Click{..}|Kind::Drag{..});
                     let batch=if mouse_action {1} else {16};
                     for events in action_events(&config.actions[action],size)?.chunks(batch) {
-                        for output in stage.process_fastpath_input(&mut image,events)? {
+                        for output in stage.process_fastpath_input(image,events)? {
                             if let ActiveStageOutput::ResponseFrame(bytes)=output {wire.write_all(&bytes).await?;}
                         }
                         tokio::time::sleep(Duration::from_millis(if mouse_action {80} else {10})).await;
@@ -515,6 +537,9 @@ async fn run(config: Config) -> Result<()> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--web-source") {
+        return web_source::run(&args[2..]).await;
+    }
     ensure!(
         args.len() == 2,
         "Usage: zmacrds-rdp-check PRIVATE_CONFIG.json (loopback 3390 only)"

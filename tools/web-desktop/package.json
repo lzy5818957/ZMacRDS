@@ -1,0 +1,13 @@
+{
+  "name": "zmacrds-web-desktop-pilot",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@novnc/novnc": "1.7.0",
+    "ws": "8.22.1"
+  }
+}

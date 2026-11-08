@@ -420,6 +420,9 @@ impl RdpServerDisplay for Handler {
 
 impl Runtime {
     pub async fn run(mut self) -> Result<()> {
+        // The browser gateway allows up to 64 desktop transports. Its
+        // loopback RDP adapter needs a matching slot for each active stream.
+        const MAX_CONNECTIONS: usize = 64;
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let listener = TcpListener::bind(("127.0.0.1", self.port)).await?;
@@ -429,7 +432,7 @@ impl Runtime {
         };
         println!(
             "{}",
-            json!({"event":"multi_starting","address":listener.local_addr()?.to_string(),"lan_port":self.lan_port,"local_auth":self.routes.local_auth,"uid":unsafe{libc::geteuid()},"users":self.routes.users.len(),"security":"TLS","max_connections":16})
+            json!({"event":"multi_starting","address":listener.local_addr()?.to_string(),"lan_port":self.lan_port,"local_auth":self.routes.local_auth,"uid":unsafe{libc::geteuid()},"users":self.routes.users.len(),"security":"TLS","max_connections":MAX_CONNECTIONS})
         );
         tokio::task::LocalSet::new().run_until(async {
             let mut tasks=JoinSet::new();let mut next=0u64;
@@ -447,7 +450,7 @@ impl Runtime {
                         }
                     }=>{
                         let(stream,peer)=accepted?;
-                        if !allowed_peer(peer.ip()) || tasks.len()>=16 {drop(stream);continue;}
+                        if !allowed_peer(peer.ip()) || tasks.len()>=MAX_CONNECTIONS {drop(stream);continue;}
                         next+=1;let connection=Connection::new(next);
                         let routes=self.routes.clone();let tls=self.tls.clone();let port=self.port;
                         tasks.spawn_local(async move {
